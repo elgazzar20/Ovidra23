@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email.toLowerCase() == 'mohamedelgazzar@gmail.com' ||
+          request.auth.token.email.toLowerCase() == 'mohamedelgazzar700@gmail.com' ||
+          request.auth.token.email.toLowerCase() == 'mohamedelgazzar748@gmail.com'
+        )) || (
+          exists(/databases/$(database)/documents/admins/super_admin) &&
+          get(/databases/$(database)/documents/admins/super_admin).data.keys().hasAll(['email', 'active']) &&
+          get(/databases/$(database)/documents/admins/super_admin).data.email.toLowerCase() == request.auth.token.email.toLowerCase() &&
+          get(/databases/$(database)/documents/admins/super_admin).data.active == true
+        )
+      );
+    }
+    match /admins/{document=**} { allow read: if isSignedIn(); allow write: if isSuperAdmin(); }
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isSuperAdmin());
+      allow create: if isSignedIn() && request.auth.uid == uid;
+      allow update: if isSuperAdmin() || (isSignedIn() && request.auth.uid == uid);
+      allow delete: if isSuperAdmin();
+    }
+    match /centers/{centerId} {
+      allow read: if isSuperAdmin() || (isSignedIn() && request.auth.uid == centerId);
+      allow create: if isSignedIn() && request.auth.uid == centerId;
+      allow update: if isSuperAdmin() || (isSignedIn() && request.auth.uid == centerId);
+      allow delete: if isSuperAdmin();
+      match /{document=**} { allow read, write: if isSignedIn() && (request.auth.uid == centerId || isSuperAdmin()); }
+    }
+    match /audit_logs/{logId} { allow read: if isSuperAdmin(); allow create: if isSuperAdmin(); allow update, delete: if false; }
+    match /notifications/{notifId} { allow read: if isSignedIn(); allow create: if isSignedIn(); allow update: if isSignedIn(); }
+    match /otp_verifications/{uid} { allow read, write: if isSignedIn() && request.auth.uid == uid; }
+    match /system/{document=**} { allow read: if isSignedIn(); allow write: if isSignedIn(); }
+    match /students/{studentCode} { allow read, write: if isSignedIn(); }
+    match /teachers/{teacherId} { allow read, write: if isSignedIn(); }
+    match /attendance/{recordId} { allow read, write: if isSignedIn(); }
+    match /grades/{gradeId} { allow read, write: if isSignedIn(); }
+    match /payments/{paymentId} { allow read, write: if isSignedIn(); }
+    match /parents/{parentUid} { allow read, write: if isSignedIn(); }
+    match /student_links/{linkId} { allow read, write: if isSignedIn(); }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

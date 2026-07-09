@@ -1,0 +1,8 @@
+{
+  "name": "الجدديد 7/7 2026",
+  "description": "أوفيدرا - نظام إدارة المراكز والسناتر التعليمية المتكامل - حل ذكي متكامل للمجموعات، الطلاب، والماليات مع دعم المزامنة السحابية الفورية",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
