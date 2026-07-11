@@ -120,6 +120,10 @@ export function GlobalSettingsTab({ admin }: { admin: { uid: string; email: stri
   const [maintenanceEnabled, setMaintenanceEnabled] = useState(false);
   const [maintenanceMessage, setMaintenanceMessage] = useState("");
 
+  const [appLockEnabled, setAppLockEnabled] = useState(false);
+  const [appLockMessage, setAppLockMessage] = useState("");
+  const [appLockDownloadUrl, setAppLockDownloadUrl] = useState("");
+
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [fbApiKey, setFbApiKey] = useState("");
   const [fbAuthDomain, setFbAuthDomain] = useState("");
@@ -162,6 +166,11 @@ export function GlobalSettingsTab({ admin }: { admin: { uid: string; email: stri
 
       setMaintenanceEnabled(data.maintenanceMode?.enabled || false);
       setMaintenanceMessage(data.maintenanceMode?.message || "");
+
+      setAppLockEnabled(data.appLock?.enabled || false);
+      setAppLockMessage(data.appLock?.message || "");
+      setAppLockDownloadUrl(data.appLock?.downloadUrl || "");
+
       setGeminiApiKey(data.geminiApiKey || "");
 
       if (data.firebaseConfig) {
@@ -260,6 +269,11 @@ export function GlobalSettingsTab({ admin }: { admin: { uid: string; email: stri
       maintenanceMode: {
         enabled: maintenanceEnabled,
         message: maintenanceMessage,
+      },
+      appLock: {
+        enabled: appLockEnabled,
+        message: appLockMessage,
+        downloadUrl: appLockDownloadUrl,
       },
       firebaseConfig: {
         apiKey: fbApiKey,
@@ -628,6 +642,43 @@ export function GlobalSettingsTab({ admin }: { admin: { uid: string; email: stri
                 placeholder="يرجى كتابة الرسالة التي يراها زوار الموقع هنا أثناء تفعيل وضعية الصيانة..."
               />
             </Field>
+          </Card>
+
+          {/* App Lock Settings Card */}
+          <Card className="p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-line/40 pb-2">
+              <h3 className="text-sm font-bold text-ink">قفل وإغلاق التطبيق لتحديث البرنامج (App Lock for Update)</h3>
+              <Toggle checked={appLockEnabled} onChange={setAppLockEnabled} />
+            </div>
+
+            <div className="p-4 rounded-xl border border-rose-500/10 bg-rose-500/5 text-rose-700 dark:text-rose-300 flex gap-3 items-start">
+              <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="text-xs font-bold">ماذا يحدث عند قفل التطبيق؟</p>
+                <p className="text-[11px] opacity-90 leading-relaxed">
+                  عند قفل التطبيق، سيتم إغلاق التطبيق بالكامل أمام المستخدمين العاديين ويظهر لهم شاشة تفيد بضرورة التحديث مع زر لتحميل الإصدار الجديد من موقعك.
+                  يستخدم هذا الخيار لشطر التطبيق وإجبار المستخدمين على استخدام أحدث إصدار عند إصدار تحديثات برمجية هامة.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Field label="رابط تحميل التحديث الجديد (Download URL)">
+                <Input
+                  value={appLockDownloadUrl}
+                  onChange={(e) => setAppLockDownloadUrl(e.target.value)}
+                  placeholder="https://ovidra.com/download"
+                />
+              </Field>
+
+              <Field label="رسالة التنبيه التي تظهر للمستخدمين عند قفل التطبيق">
+                <Input
+                  value={appLockMessage}
+                  onChange={(e) => setAppLockMessage(e.target.value)}
+                  placeholder="تم إيقاف هذا الإصدار من التطبيق مؤقتاً لإجراء تحديثات هامة. يرجى تحميل النسخة الجديدة للاستمرار."
+                />
+              </Field>
+            </div>
           </Card>
         </motion.div>
       )}

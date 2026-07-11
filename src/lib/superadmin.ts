@@ -589,16 +589,28 @@ export async function updateUserStatus(
   });
 }
 
-/** Updates a center's subscription. */
+/** Updates a center's subscription.
+ * CRITICAL: Always writes to Firestore FIRST as the source of truth.
+ * The user's app will pick up changes via onSnapshot listener in real-time.
+ */
 export async function updateSubscription(
   centerId: string,
   patch: Partial<Pick<CenterRecord, "subscriptionPlan" | "subscriptionStatus" | "subscriptionStartDate" | "subscriptionEndDate" | any>>,
   admin: { uid: string; email: string },
 ): Promise<void> {
-  // 1. Try Firestore update
+  // 1. Firestore is the SOURCE OF TRUTH — write there first with a timestamp
+  //    The lastPlanUpdate field ensures onSnapshot always fires even if the
+  //    same plan value is written again.
+  const firestorePatch = {
+    ...patch,
+    lastPlanUpdate: Date.now(),
+    lastUpdatedBy: admin.email,
+  };
+
   try {
     if (FIREBASE_ENABLED && firestoreDb) {
-      await updateDoc(doc(firestoreDb, "centers", centerId), patch);
+      await updateDoc(doc(firestoreDb, "centers", centerId), firestorePatch);
+      console.log(`[SuperAdmin] ✅ updateSubscription: Firestore updated for ${centerId}`, firestorePatch);
 
       // Send a notification if discount is applied
       if (patch.discountAmount !== undefined) {
@@ -625,13 +637,40 @@ export async function updateSubscription(
           console.error("[SuperAdmin] Failed to dispatch discount notification:", notifErr);
         }
       }
+
+      // Send a notification for plan changes
+      if (patch.subscriptionPlan) {
+        try {
+          const centerSnap = await getDoc(doc(firestoreDb, "centers", centerId));
+          if (centerSnap.exists()) {
+            const centerData = centerSnap.data();
+            const ownerUid = centerData.ownerId;
+            const planName = PLAN_DEFINITIONS.find(p => p.id === patch.subscriptionPlan)?.name || patch.subscriptionPlan;
+            if (ownerUid) {
+              const notifId = `plan_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+              await setDoc(doc(firestoreDb, "notifications", notifId), {
+                notifId,
+                recipientUid: ownerUid,
+                centerId,
+                type: "subscription",
+                title: `تم تحديث خطتك إلى ${planName} ✨`,
+                body: `تم تغيير خطة اشتراكك إلى "${planName}" بواسطة إدارة المنصة. التغيير ساري فوراً.`,
+                read: false,
+                createdAt: Date.now(),
+              });
+            }
+          }
+        } catch (notifErr) {
+          console.error("[SuperAdmin] Failed to dispatch plan change notification:", notifErr);
+        }
+      }
     }
   } catch (e) {
     console.error("[SuperAdmin] updateSubscription Firestore error:", e);
     throw e;
   }
 
-  // 2. Update in local storage list of centers
+  // 2. Update in local storage list of centers (admin's local cache)
   try {
     const raw = localStorage.getItem("cpd_local_centers");
     const centers = raw ? JSON.parse(raw) as CenterRecord[] : [];
@@ -644,10 +683,13 @@ export async function updateSubscription(
     console.error("[SuperAdmin] Failed to update local centers list:", e);
   }
 
-  // 3. Update specific center plan keys so the center user immediately sees the changes!
+  // 3. Update admin's local plan keys (useful if admin is also the user on same device)
   try {
     if (patch.subscriptionPlan) {
       localStorage.setItem(`cpd_plan_${centerId}`, JSON.stringify(patch.subscriptionPlan));
+    }
+    if (patch.subscriptionStatus) {
+      localStorage.setItem(`cpd_plan_status_${centerId}`, JSON.stringify(patch.subscriptionStatus));
     }
     if (patch.subscriptionEndDate !== undefined) {
       localStorage.setItem(`cpd_plan_end_${centerId}`, String(patch.subscriptionEndDate));
@@ -2247,6 +2289,11 @@ export interface GlobalPlatformSettings {
     notifications?: boolean;
   };
   geminiApiKey?: string;
+  appLock?: {
+    enabled: boolean;
+    message?: string;
+    downloadUrl?: string;
+  };
   updatedAt?: number;
   updatedBy?: {
     uid: string;
@@ -2275,6 +2322,11 @@ export const DEFAULT_PLATFORM_SETTINGS: GlobalPlatformSettings = {
   maintenanceMode: {
     enabled: false,
     message: "المنصة في أعمال صيانة مجدولة حالياً لتحديث وتحسين الأنظمة. سنعود للعمل قريباً جداً، نشكر تفهمكم وصبركم.",
+  },
+  appLock: {
+    enabled: false,
+    message: "تم إيقاف هذا الإصدار من التطبيق مؤقتاً لإجراء تحديثات هامة. يرجى تحميل النسخة الجديدة للاستمرار.",
+    downloadUrl: "https://ovidra.com/download",
   },
   firebaseConfig: {
     apiKey: "",
@@ -2373,5 +2425,144 @@ export async function updateGlobalSettings(
   return updated;
 }
 
+/* ============================== Quick Plan Management for Super Admin ============================== */
 
+/**
+ * Grants free trial days to a center. Extends the subscription end date
+ * by the specified number of days, sets the plan if provided, and sends
+ * a real-time notification to the center owner.
+ */
+export async function grantFreeDays(
+  centerId: string,
+  days: number,
+  plan: SubscriptionPlan | null,
+  admin: { uid: string; email: string },
+): Promise<{ newEndDate: number }> {
+  if (!FIREBASE_ENABLED || !firestoreDb) {
+    return { newEndDate: Date.now() + days * 86400000 };
+  }
+
+  // 1. Read current center data
+  const snap = await getDoc(doc(firestoreDb, "centers", centerId));
+  const current = snap.exists() ? snap.data() : {};
+  const currentPlan = plan || current.subscriptionPlan || "free";
+  const planName = PLAN_DEFINITIONS.find(p => p.id === currentPlan)?.name || currentPlan;
+
+  // Calculate new end date: extend from current end date or from now
+  const baseDate = Math.max(current.subscriptionEndDate ?? Date.now(), Date.now());
+  const newEndDate = baseDate + days * 86400000;
+
+  // 2. Update subscription with plan + new end date
+  const patch: Record<string, any> = {
+    subscriptionStatus: "active",
+    subscriptionEndDate: newEndDate,
+    lastFreeDaysGrant: Date.now(),
+    lastFreeDaysAmount: days,
+    lastFreeDaysAdmin: admin.email,
+  };
+  if (plan) {
+    patch.subscriptionPlan = plan;
+  }
+
+  await updateSubscription(centerId, patch, admin);
+
+  // 3. Apply plan features and limits if plan was changed
+  if (plan) {
+    await applyPlanFeatures(centerId, plan, admin);
+    const planLimits = DEFAULT_LIMITS[plan];
+    if (planLimits) {
+      try {
+        await updateDoc(doc(firestoreDb, "centers", centerId), { customLimits: planLimits });
+      } catch (e) {
+        console.error("[SuperAdmin] grantFreeDays: Failed to update limits:", e);
+      }
+    }
+  }
+
+  // 4. Send instant notification to center owner
+  const ownerUid = current.ownerId;
+  if (ownerUid) {
+    const notifId = `free_days_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const endDateStr = new Date(newEndDate).toLocaleDateString("ar-EG");
+    await setDoc(doc(firestoreDb, "notifications", notifId), {
+      notifId,
+      recipientUid: ownerUid,
+      centerId,
+      type: "subscription",
+      title: `🎁 تم منحك ${days} أيام مجانية!`,
+      body: `تم مد خطة "${planName}" لمدة ${days} يوم مجاناً بواسطة إدارة المنصة. تاريخ الانتهاء الجديد: ${endDateStr}. استمتع بكل المميزات!`,
+      read: false,
+      createdAt: Date.now(),
+    });
+  }
+
+  // 5. Add timeline event
+  await addTimelineEvent(centerId, {
+    type: "free_days",
+    title: `منح ${days} أيام مجانية`,
+    description: `تم منح ${days} أيام مجانية للخطة ${planName}. تاريخ الانتهاء الجديد: ${new Date(newEndDate).toLocaleDateString("ar-EG")}`,
+    newPlan: currentPlan as SubscriptionPlan,
+    daysAdded: days,
+  }, admin);
+
+  return { newEndDate };
+}
+
+/**
+ * Performs a one-click plan switch for a center. Changes the plan,
+ * applies all features and limits, and sends an instant notification.
+ */
+export async function quickPlanSwitch(
+  centerId: string,
+  newPlan: SubscriptionPlan,
+  admin: { uid: string; email: string },
+): Promise<void> {
+  if (!FIREBASE_ENABLED || !firestoreDb) return;
+
+  // 1. Read current center data
+  const snap = await getDoc(doc(firestoreDb, "centers", centerId));
+  const current = snap.exists() ? snap.data() : {};
+  const previousPlan = current.subscriptionPlan || "free";
+  const planName = PLAN_DEFINITIONS.find(p => p.id === newPlan)?.name || newPlan;
+
+  // 2. Determine subscription end date
+  let endDate = current.subscriptionEndDate || Date.now();
+  if (newPlan === "free") {
+    // Free plan has no end date
+    endDate = 0;
+  } else if (!current.subscriptionEndDate || current.subscriptionEndDate < Date.now()) {
+    // If no valid end date, give 30 days by default
+    endDate = Date.now() + 30 * 86400000;
+  }
+
+  // 3. Update subscription
+  await updateSubscription(centerId, {
+    subscriptionPlan: newPlan,
+    subscriptionStatus: newPlan === "free" ? "trialing" : "active",
+    subscriptionEndDate: endDate || undefined,
+    lastPlanSwitch: Date.now(),
+    lastPlanSwitchBy: admin.email,
+  }, admin);
+
+  // 4. Apply features and limits
+  await applyPlanFeatures(centerId, newPlan, admin);
+  const planLimits = DEFAULT_LIMITS[newPlan];
+  if (planLimits) {
+    try {
+      await updateDoc(doc(firestoreDb, "centers", centerId), { customLimits: planLimits });
+    } catch (e) {
+      console.error("[SuperAdmin] quickPlanSwitch: Failed to update limits:", e);
+    }
+  }
+
+  // 5. Add timeline event
+  const isUpgrade = (PLAN_DEFINITIONS.findIndex(p => p.id === newPlan) > PLAN_DEFINITIONS.findIndex(p => p.id === previousPlan));
+  await addTimelineEvent(centerId, {
+    type: isUpgrade ? "upgrade" : "downgrade",
+    title: isUpgrade ? `ترقية إلى خطة ${planName}` : `تغيير إلى خطة ${planName}`,
+    description: `تم تغيير الخطة من "${PLAN_DEFINITIONS.find(p => p.id === previousPlan)?.name || previousPlan}" إلى "${planName}" بواسطة ${admin.email}`,
+    previousPlan: previousPlan as SubscriptionPlan,
+    newPlan: newPlan,
+  }, admin);
+}
 

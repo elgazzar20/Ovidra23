@@ -13,6 +13,27 @@ import {
 /* ----------------------------- Gemini config ---------------------------- */
 export const DEFAULT_GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY || "AQ.Ab8RN6Jbp8Au2T6bBGUKd1gT3g16pGnkYfOiR_dmOuMozQM_dA";
 
+export function getEffectiveApiKey(centerKey?: string, globalKey?: string): string {
+  const oldBadKey = "AQ.Ab8RN6Jbp8Au2T6bBGUKd1gT3g16pGnkYfOiR_dmOuMozQM_dA";
+  
+  const cleanCenter = (centerKey || "").trim();
+  if (cleanCenter && cleanCenter !== oldBadKey) {
+    return cleanCenter;
+  }
+  
+  const cleanGlobal = (globalKey || "").trim();
+  if (cleanGlobal && cleanGlobal !== oldBadKey) {
+    return cleanGlobal;
+  }
+  
+  const cleanDefault = (DEFAULT_GEMINI_KEY || "").trim();
+  if (cleanDefault && cleanDefault !== oldBadKey) {
+    return cleanDefault;
+  }
+  
+  return "";
+}
+
 interface GeminiOptions {
   systemInstruction?: string;
   temperature?: number;
@@ -25,12 +46,13 @@ async function callGemini(prompt: string, opts: GeminiOptions = {}, apiKey?: str
   const key = (apiKey && apiKey.trim()) || DEFAULT_GEMINI_KEY;
   if (!key) throw new Error("Gemini API key not configured");
 
-  // A resilient list of models to try in sequence to ensure maximum compatibility in 2026
+  // A resilient list of models to try in sequence — updated for best compatibility in 2026
   const models = [
-    "gemini-2.0-flash",
+    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-pro"
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash-lite",
   ];
 
   let lastError: Error | null = null;

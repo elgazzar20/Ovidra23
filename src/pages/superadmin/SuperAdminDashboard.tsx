@@ -6,23 +6,24 @@ import {
   TrendingUp, DollarSign, AlertCircle, Loader2, RefreshCw, Flag,
   CalendarPlus, Zap, Eye, SlidersHorizontal, Send,
   ArrowLeft, Mail, Crown, Star, MessageSquare, Check, BellRing, LifeBuoy,
-  Key, Settings, Sparkles
+  Key, Settings, Sparkles, Gift, Clock, Download, History
 } from "lucide-react";
 import {
   fetchAllCenters, fetchAuditLogs,
   updateCenterStatus, deleteCenterRecord, toggleFeatureFlag,
-  activateSubscription, extendSubscription, cancelSubscription,
   fetchCenterFeatures, updateCenterLimits, sendOwnerMessage,
   applyPlanFeatures, getFeaturesForPlan, syncUsersToCenters,
+  grantFreeDays, quickPlanSwitch, fetchTimelineEvents,
   FEATURE_FLAGS, PLAN_DEFINITIONS, DEFAULT_LIMITS,
-  type CenterRecord, type AuditLog,
+  type CenterRecord, type AuditLog, type TimelineEvent,
   type AccountStatus, type SubscriptionPlan, type CenterLimits,
 } from "../../lib/superadmin";
 import { cn } from "../../utils/cn";
 import { pushToast } from "../../components/ui";
 import { getTestimonials, approveTestimonial, deleteTestimonial, type Testimonial } from "../../lib/testimonials";
+import { db as firestoreDb, FIREBASE_ENABLED } from "../../lib/firebase";
+import { doc, onSnapshot } from "firebase/firestore";
 import { BiDashboard } from "./BiDashboard";
-import { SubscriptionCenter } from "./SubscriptionCenter";
 import { RbacManager } from "./RbacManager";
 import { AuditLogCenter } from "./AuditLogCenter";
 import { NotificationsTab } from "./NotificationsTab";
@@ -31,7 +32,7 @@ import { LicensesTab } from "./LicensesTab";
 import { GlobalSettingsTab } from "./GlobalSettingsTab";
 import { AiCopilotTab } from "./AiCopilotTab";
 
-type Tab = "overview" | "bi" | "centers" | "control" | "notifications" | "testimonials" | "rbac" | "audit" | "tickets" | "licenses" | "settings" | "ai_copilot";
+type Tab = "bi" | "users" | "notifications" | "testimonials" | "rbac" | "audit" | "tickets" | "licenses" | "settings" | "ai_copilot";
 
 /** Gets feature label in Arabic */
 function fl(f: { label: string; labelAr: string }) { return f.labelAr; }
@@ -76,17 +77,15 @@ export function SuperAdminDashboard({
   useEffect(() => { refresh(); }, [refresh]);
 
   const nav: { id: Tab; label: string; icon: typeof Building2 }[] = [
-    { id: "bi", label: "تحليلات الأعمال (BI)", icon: BarChart3 },
-    { id: "overview", label: "نظرة عامة", icon: Eye },
-    { id: "centers", label: "السناتر والمستخدمون", icon: Building2 },
-    { id: "control", label: "الاشتراكات والمميزات", icon: Crown },
-    { id: "notifications", label: "مركز الإشعارات العام", icon: BellRing },
-    { id: "testimonials", label: "إدارة التقييمات", icon: Star },
-    { id: "rbac", label: "صلاحيات الأدوار (RBAC)", icon: UserCog },
-    { id: "tickets", label: "إدارة تذاكر الدعم الفني", icon: LifeBuoy },
-    { id: "licenses", label: "مركز إدارة التراخيص", icon: Key },
-    { id: "ai_copilot", label: "مساعد الذكاء الاصطناعي", icon: Sparkles },
-    { id: "settings", label: "إعدادات المنصة العامة", icon: Settings },
+    { id: "bi", label: "لوحة التحكم", icon: BarChart3 },
+    { id: "users", label: "المستخدمون والاشتراكات", icon: Building2 },
+    { id: "notifications", label: "الإشعارات", icon: BellRing },
+    { id: "tickets", label: "تذاكر الدعم الفني", icon: LifeBuoy },
+    { id: "licenses", label: "التراخيص", icon: Key },
+    { id: "testimonials", label: "التقييمات", icon: Star },
+    { id: "rbac", label: "الصلاحيات (RBAC)", icon: UserCog },
+    { id: "ai_copilot", label: "المساعد الذكي", icon: Sparkles },
+    { id: "settings", label: "إعدادات المنصة", icon: Settings },
     { id: "audit", label: "السجلات", icon: ScrollText },
   ];
 
@@ -169,10 +168,8 @@ export function SuperAdminDashboard({
             <div className="flex items-center justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-rose-500" /></div>
           ) : (
             <motion.div key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
-              {tab === "bi" && <BiDashboard centers={centers} />}
-              {tab === "overview" && <Overview centers={centers} />}
-              {tab === "centers" && <CentersTab centers={centers} admin={admin} onUpdate={refresh} onView={setSelectedCenter} />}
-              {tab === "control" && <SubscriptionCenter centers={centers} admin={admin} onUpdate={refresh} />}
+              {tab === "bi" && <><Overview centers={centers} /><BiDashboard centers={centers} /></>}
+              {tab === "users" && <CentersTab centers={centers} admin={admin} onUpdate={refresh} onView={setSelectedCenter} />}
               {tab === "notifications" && <NotificationsTab centers={centers} admin={admin} onUpdate={refresh} />}
               {tab === "testimonials" && <TestimonialsTab />}
               {tab === "rbac" && <RbacManager admin={admin} onUpdate={refresh} />}
@@ -349,101 +346,178 @@ function CentersTab({ centers, admin, onUpdate, onView }: {
 }
 
 /* ============================== CENTER DETAIL DRAWER ============================== */
-function CenterDetailDrawer({ center, admin, onClose, onUpdate }: {
+function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }: {
   center: CenterRecord;
   admin: { uid: string; email: string };
   onClose: () => void;
   onUpdate: () => void;
 }) {
-  const [tab, setTab] = useState<"overview" | "features" | "limits" | "subscription" | "message">("overview");
+  const [tab, setTab] = useState<"overview" | "subscription" | "features" | "limits" | "history" | "message">("overview");
   const [features, setFeatures] = useState<Record<string, boolean>>({});
   const [loadingF, setLoadingF] = useState(true);
-  const [limits, setLimits] = useState<CenterLimits>(center.customLimits ?? DEFAULT_LIMITS[center.subscriptionPlan || "free"] ?? DEFAULT_LIMITS.free);
+  
+  // Real-time center state
+  const [currentCenter, setCurrentCenter] = useState<CenterRecord>(initialCenter);
+  
+  const [limits, setLimits] = useState<CenterLimits>(
+    initialCenter.customLimits ?? DEFAULT_LIMITS[initialCenter.subscriptionPlan || "free"] ?? DEFAULT_LIMITS.free
+  );
   const [msg, setMsg] = useState("");
-  const [plan, setPlan] = useState<SubscriptionPlan>(center.subscriptionPlan || "free");
-  const [days, setDays] = useState(30);
+
+  // Subscription management state
+  const [freeDays, setFreeDays] = useState(1);
+  const [freeDaysPlan, setFreeDaysPlan] = useState<SubscriptionPlan>(initialCenter.subscriptionPlan || "pro");
+  const [switchingPlan, setSwitchingPlan] = useState(false);
+  const [grantingDays, setGrantingDays] = useState(false);
+  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [loadingTimeline, setLoadingTimeline] = useState(false);
+
+  // Sync center details in real-time from Firestore
+  useEffect(() => {
+    setCurrentCenter(initialCenter);
+  }, [initialCenter]);
 
   useEffect(() => {
+    if (!FIREBASE_ENABLED || !firestoreDb) return;
+    const unsub = onSnapshot(doc(firestoreDb, "centers", initialCenter.id), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setCurrentCenter((prev) => ({
+          ...prev,
+          ...data,
+          id: snap.id,
+        }) as CenterRecord);
+      }
+    });
+    return unsub;
+  }, [initialCenter.id]);
+
+  // Keep limits and plan in sync with local input fields
+  useEffect(() => {
+    setLimits(
+      currentCenter.customLimits ?? DEFAULT_LIMITS[currentCenter.subscriptionPlan || "free"] ?? DEFAULT_LIMITS.free
+    );
+    if (currentCenter.subscriptionPlan !== "free") {
+      setFreeDaysPlan(currentCenter.subscriptionPlan || "pro");
+    }
+  }, [currentCenter.customLimits, currentCenter.subscriptionPlan]);
+
+  // Real-time custom features listener
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !firestoreDb) {
+      setLoadingF(true);
+      fetchCenterFeatures(initialCenter.id).then((f) => {
+        setFeatures(f);
+        setLoadingF(false);
+      });
+      return;
+    }
     setLoadingF(true);
-    fetchCenterFeatures(center.id).then((f) => { setFeatures(f); setLoadingF(false); });
-  }, [center.id]);
+    const unsub = onSnapshot(
+      doc(firestoreDb, "centers", initialCenter.id, "config", "features"),
+      (snap) => {
+        if (snap.exists()) {
+          setFeatures(snap.data() as Record<string, boolean>);
+        } else {
+          setFeatures({});
+        }
+        setLoadingF(false);
+      },
+      () => setLoadingF(false)
+    );
+    return unsub;
+  }, [initialCenter.id]);
+
+  // Load timeline when history tab is active
+  useEffect(() => {
+    if (tab === "history" || tab === "subscription") {
+      setLoadingTimeline(true);
+      fetchTimelineEvents(currentCenter.id).then((events) => {
+        setTimeline(events);
+        setLoadingTimeline(false);
+      }).catch(() => setLoadingTimeline(false));
+    }
+  }, [tab, currentCenter.id]);
 
   const toggleF = async (key: string) => {
     const newVal = !features[key];
     setFeatures((p) => ({ ...p, [key]: newVal }));
-    await toggleFeatureFlag(center.id, key, newVal, admin);
+    await toggleFeatureFlag(currentCenter.id, key, newVal, admin);
   };
 
-  const saveLimits = async () => { await updateCenterLimits(center.id, limits, admin); onUpdate(); };
+  const saveLimits = async () => {
+    await updateCenterLimits(currentCenter.id, limits, admin);
+    onUpdate();
+    pushToast("تم حفظ الحدود بنجاح!");
+  };
 
   const sendMessage = async () => {
     if (!msg.trim()) return;
-    await sendOwnerMessage(center.id, center.ownerId, msg.trim(), admin);
+    await sendOwnerMessage(currentCenter.id, currentCenter.ownerId, msg.trim(), admin);
     setMsg("");
     pushToast("تم إرسال الرسالة بنجاح!");
   };
 
-  const [actionMsg, setActionMsg] = useState("");
-
-  const doActivate = async () => {
-    setActionMsg("جارٍ التفعيل...");
-    try {
-      await activateSubscription(center.id, plan, days, admin);
-      const msg = `تم تفعيل الخطة ${planLabels[plan]} لمدة ${days} يوم بنجاح`;
-      setActionMsg(msg);
-      pushToast(msg, "success");
-      onUpdate();
-    } catch (e) {
-      const err = "فشل التفعيل: " + (e as Error).message;
-      setActionMsg(err);
-      pushToast(err, "error");
-    }
-  };
-  const doExtend = async () => {
-    setActionMsg("جارٍ التمديد...");
-    try {
-      await extendSubscription(center.id, days, admin);
-      const msg = `تم تمديد الاشتراك ${days} يوم بنجاح`;
-      setActionMsg(msg);
-      pushToast(msg, "success");
-      onUpdate();
-    } catch (e) {
-      setActionMsg("فشل التمديد");
-      pushToast("فشل تمديد الاشتراك", "error");
-    }
-  };
-  const doCancel = async () => {
-    setActionMsg("جارٍ الإلغاء...");
-    try {
-      await cancelSubscription(center.id, admin);
-      setActionMsg("تم إلغاء الاشتراك بنجاح");
-      pushToast("تم إلغاء الاشتراك بنجاح", "success");
-      onUpdate();
-    } catch (e) {
-      setActionMsg("فشل الإلغاء");
-      pushToast("فشل إلغاء الاشتراك", "error");
-    }
-  };
   const doApplyPlan = async (p: SubscriptionPlan) => {
     setLoadingF(true);
-    await applyPlanFeatures(center.id, p, admin);
+    await applyPlanFeatures(currentCenter.id, p, admin);
     setFeatures(getFeaturesForPlan(p));
     setLoadingF(false);
   };
 
+  const handleQuickPlanSwitch = async (plan: SubscriptionPlan) => {
+    if (switchingPlan) return;
+    setSwitchingPlan(true);
+    try {
+      await quickPlanSwitch(currentCenter.id, plan, admin);
+      pushToast(`تم تبديل الخطة إلى ${planLabels[plan]} بنجاح! 🎉`);
+      onUpdate();
+    } catch (e) {
+      pushToast("فشل تبديل الخطة. حاول مرة أخرى.");
+      console.error(e);
+    } finally {
+      setSwitchingPlan(false);
+    }
+  };
+
+  const handleGrantFreeDays = async () => {
+    if (grantingDays) return;
+    setGrantingDays(true);
+    try {
+      const { newEndDate } = await grantFreeDays(currentCenter.id, freeDays, freeDaysPlan, admin);
+      pushToast(`تم منح ${freeDays} أيام مجانية! تاريخ الانتهاء الجديد: ${new Date(newEndDate).toLocaleDateString("ar-EG")} 🎁`);
+      onUpdate();
+    } catch (e) {
+      pushToast("فشل منح الأيام المجانية. حاول مرة أخرى.");
+      console.error(e);
+    } finally {
+      setGrantingDays(false);
+    }
+  };
+
+  const handleExportCenter = () => {
+    const data = JSON.stringify(currentCenter, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `center_${currentCenter.id}_${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    pushToast("تم تصدير بيانات السنتر!");
+  };
+
   const tabs = [
     { id: "overview" as const, label: "معلومات", icon: Eye },
+    { id: "subscription" as const, label: "إدارة الخطة", icon: Crown },
     { id: "features" as const, label: "المميزات", icon: Flag },
     { id: "limits" as const, label: "الحدود", icon: SlidersHorizontal },
-    { id: "subscription" as const, label: "الاشتراك", icon: CreditCard },
+    { id: "history" as const, label: "السجل", icon: History },
     { id: "message" as const, label: "رسالة", icon: Mail },
   ];
 
-  const durations = [
-    { l: "3 أيام", v: 3 }, { l: "أسبوع", v: 7 }, { l: "أسبوعين", v: 14 },
-    { l: "شهر", v: 30 }, { l: "شهرين", v: 60 }, { l: "3 أشهر", v: 90 },
-    { l: "5 أشهر", v: 150 }, { l: "6 أشهر", v: 180 }, { l: "سنة", v: 365 },
-  ];
+  const currentPlanDef = PLAN_DEFINITIONS.find(p => p.id === currentCenter.subscriptionPlan) || PLAN_DEFINITIONS[0];
+  const daysRemaining = currentCenter.subscriptionEndDate ? Math.max(0, Math.ceil((currentCenter.subscriptionEndDate - Date.now()) / 86400000)) : null;
 
   return (
     <div className="min-h-screen bg-bg">
@@ -453,8 +527,11 @@ function CenterDetailDrawer({ center, admin, onClose, onUpdate }: {
             <ArrowLeft className="h-4 w-4 rtl:rotate-180" /> رجوع
           </button>
           <div className="ms-auto flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white shadow-lg">{(center.name || "C")[0]}</div>
-            <div><p className="text-sm font-bold text-ink">{center.name || "بدون اسم"}</p><p className="text-[10px] text-muted">{center.ownerEmail}</p></div>
+            <button onClick={handleExportCenter} title="تصدير بيانات السنتر" className="rounded-lg border border-line p-2 text-muted hover:text-ink hover:bg-elevated transition">
+              <Download className="h-4 w-4" />
+            </button>
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-sm font-bold text-white shadow-lg">{(currentCenter.name || "C")[0]}</div>
+            <div><p className="text-sm font-bold text-ink">{currentCenter.name || "بدون اسم"}</p><p className="text-[10px] text-muted">{currentCenter.ownerEmail}</p></div>
           </div>
         </div>
       </div>
@@ -474,13 +551,212 @@ function CenterDetailDrawer({ center, admin, onClose, onUpdate }: {
           <motion.div key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
 
             {tab === "overview" && (
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                <StatCard label="الطلاب" value={center.studentCount || 0} icon={GraduationCap} tone="from-emerald-500 to-green-600" />
-                <StatCard label="المعلمون" value={center.teacherCount || 0} icon={UserCog} tone="from-sky-500 to-blue-600" />
-                <StatCard label="الحالة" value={center.status} icon={ShieldCheck} tone="from-violet-500 to-purple-600" />
-                <StatCard label="الخطة" value={planLabels[center.subscriptionPlan || "free"]} icon={CreditCard} tone="from-amber-500 to-orange-600" />
-                <StatCard label="حالة الاشتراك" value={center.subscriptionStatus || "none"} icon={CheckCircle2} tone="from-teal-500 to-cyan-600" />
-                <StatCard label="تاريخ الانتهاء" value={center.subscriptionEndDate ? new Date(center.subscriptionEndDate).toLocaleDateString() : "—"} icon={CalendarPlus} tone="from-rose-500 to-pink-600" />
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                  <StatCard label="الطلاب" value={currentCenter.studentCount || 0} icon={GraduationCap} tone="from-emerald-500 to-green-600" />
+                  <StatCard label="المعلمون" value={currentCenter.teacherCount || 0} icon={UserCog} tone="from-sky-500 to-blue-600" />
+                  <StatCard label="الحالة" value={currentCenter.status === "active" ? "نشط" : currentCenter.status === "suspended" ? "موقوف" : "محظور"} icon={ShieldCheck} tone="from-violet-500 to-purple-600" />
+                  <StatCard label="الخطة" value={planLabels[currentCenter.subscriptionPlan || "free"]} icon={CreditCard} tone="from-amber-500 to-orange-600" />
+                  <StatCard label="حالة الاشتراك" value={currentCenter.subscriptionStatus === "active" ? "نشط" : currentCenter.subscriptionStatus === "trialing" ? "تجريبي" : currentCenter.subscriptionStatus || "—"} icon={CheckCircle2} tone="from-teal-500 to-cyan-600" />
+                  <StatCard label="تاريخ الانتهاء" value={currentCenter.subscriptionEndDate ? new Date(currentCenter.subscriptionEndDate).toLocaleDateString("ar-EG") : "—"} icon={CalendarPlus} tone="from-rose-500 to-pink-600" />
+                </div>
+                {/* Quick Actions */}
+                <div className="rounded-2xl border border-line bg-surface p-4">
+                  <h3 className="text-sm font-bold text-ink mb-3 flex items-center gap-2"><Zap className="h-4 w-4 text-amber-500" /> إجراءات سريعة</h3>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => setTab("subscription")} className="inline-flex items-center gap-1.5 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs font-bold text-brand-700 transition hover:bg-brand-100 dark:border-brand-500/30 dark:bg-brand-500/10 dark:text-brand-200">
+                      <Crown className="h-3.5 w-3.5" /> إدارة الخطة
+                    </button>
+                    <button onClick={() => setTab("features")} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
+                      <Flag className="h-3.5 w-3.5" /> تعديل المميزات
+                    </button>
+                    <button onClick={handleExportCenter} className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 transition hover:bg-violet-100 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200">
+                      <Download className="h-3.5 w-3.5" /> تصدير البيانات
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ============== SUBSCRIPTION MANAGEMENT TAB ============== */}
+            {tab === "subscription" && (
+              <div className="space-y-6">
+                {/* Current Plan Summary */}
+                <div className="rounded-2xl border border-line bg-gradient-to-br from-brand-50/50 to-violet-50/50 p-5 dark:from-brand-500/5 dark:to-violet-500/5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-ink flex items-center gap-2"><Crown className="h-4 w-4 text-amber-500" /> الخطة الحالية</h3>
+                      <div className="mt-2 flex items-center gap-3">
+                        <span className={cn("rounded-full px-3 py-1 text-sm font-extrabold", currentPlanDef.color)}>{currentPlanDef.name}</span>
+                        {daysRemaining !== null && daysRemaining > 0 && (
+                          <span className="flex items-center gap-1 text-xs text-muted">
+                            <Clock className="h-3.5 w-3.5" />
+                            متبقي {daysRemaining} يوم
+                          </span>
+                        )}
+                        {daysRemaining !== null && daysRemaining === 0 && (
+                          <span className="flex items-center gap-1 text-xs font-bold text-rose-600">⚠️ منتهي</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-left">
+                      <p className="text-[10px] text-muted">حالة الاشتراك</p>
+                      <span className={cn("text-xs font-bold", currentCenter.subscriptionStatus === "active" ? "text-emerald-600" : "text-amber-600")}>
+                        {currentCenter.subscriptionStatus === "active" ? "نشط ✅" : currentCenter.subscriptionStatus === "trialing" ? "تجريبي" : currentCenter.subscriptionStatus || "—"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Plan Switch */}
+                <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+                  <h3 className="text-sm font-black text-ink mb-4 flex items-center gap-2">
+                    <Zap className="h-4 w-4 text-brand-500" /> تبديل الخطة لحظياً
+                  </h3>
+                  <p className="text-xs text-muted mb-4">اختر خطة لتطبيقها فوراً على هذا السنتر. سيتم تحديث المميزات والحدود تلقائياً وإرسال إشعار لحظي للمستخدم.</p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    {PLAN_DEFINITIONS.map((plan) => {
+                      const isCurrent = plan.id === currentCenter.subscriptionPlan;
+                      return (
+                        <motion.button
+                          key={plan.id}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={() => !isCurrent && handleQuickPlanSwitch(plan.id)}
+                          disabled={isCurrent || switchingPlan}
+                          className={cn(
+                            "relative rounded-xl border-2 p-4 text-center transition-all",
+                            isCurrent
+                              ? "border-emerald-400 bg-emerald-50/50 dark:border-emerald-500/40 dark:bg-emerald-500/10"
+                              : "border-line hover:border-brand-400 hover:shadow-md cursor-pointer",
+                            switchingPlan && !isCurrent && "opacity-50"
+                          )}
+                        >
+                          {isCurrent && (
+                            <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[9px] font-bold text-white">الحالية</span>
+                          )}
+                          <span className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold", plan.color)}>
+                            {plan.id === "enterprise" && <Crown className="h-3 w-3" />}{plan.name}
+                          </span>
+                          <p className="mt-2 text-xl font-extrabold text-ink">{plan.price}<span className="text-xs text-muted"> ج.م/شهر</span></p>
+                          <p className="mt-1 text-[10px] text-muted">
+                            {plan.maxStudents === 99999 ? "طلاب غير محدودين" : `حتى ${plan.maxStudents} طالب`}
+                          </p>
+                          {switchingPlan && !isCurrent && <Loader2 className="mx-auto mt-2 h-4 w-4 animate-spin text-brand-500" />}
+                        </motion.button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Grant Free Days */}
+                <div className="rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50/30 p-5 dark:border-amber-500/30 dark:bg-amber-500/5">
+                  <h3 className="text-sm font-black text-ink mb-3 flex items-center gap-2">
+                    <Gift className="h-4 w-4 text-amber-500" /> منح أيام مجانية
+                  </h3>
+                  <p className="text-xs text-muted mb-4">أضف أيام مجانية للمستخدم مع اختيار الخطة. سيتم تمديد تاريخ الانتهاء وإرسال إشعار فوري.</p>
+                  
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+                    {/* Plan selector */}
+                    <div className="flex-1">
+                      <label className="mb-1.5 block text-xs font-bold text-muted">الخطة المراد تمديدها</label>
+                      <select
+                        value={freeDaysPlan}
+                        onChange={(e) => setFreeDaysPlan(e.target.value as SubscriptionPlan)}
+                        className="h-10 w-full rounded-xl border border-line bg-surface px-3 text-sm text-ink focus:border-brand-400 focus:outline-none"
+                      >
+                        {PLAN_DEFINITIONS.filter(p => p.id !== "free").map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Days selector */}
+                    <div className="flex-1">
+                      <label className="mb-1.5 block text-xs font-bold text-muted">عدد الأيام</label>
+                      <div className="flex gap-1.5">
+                        {[1, 2, 3, 5, 7, 14, 30].map((d) => (
+                          <button
+                            key={d}
+                            onClick={() => setFreeDays(d)}
+                            className={cn(
+                              "h-10 rounded-lg border px-3 text-xs font-bold transition",
+                              freeDays === d
+                                ? "border-amber-400 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/20 dark:text-amber-200"
+                                : "border-line bg-surface text-muted hover:border-amber-300 hover:text-ink"
+                            )}
+                          >
+                            {d}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Grant button */}
+                    <button
+                      onClick={handleGrantFreeDays}
+                      disabled={grantingDays}
+                      className="inline-flex h-10 items-center gap-2 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 px-5 text-sm font-bold text-white shadow-lg shadow-amber-500/20 transition hover:brightness-110 disabled:opacity-60"
+                    >
+                      {grantingDays ? <Loader2 className="h-4 w-4 animate-spin" /> : <Gift className="h-4 w-4" />}
+                      منح {freeDays} يوم
+                    </button>
+                  </div>
+
+                  {/* Preview */}
+                  <div className="mt-4 rounded-xl bg-amber-100/50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                    <p className="font-bold">معاينة:</p>
+                    <p>سيتم مد خطة <strong>{PLAN_DEFINITIONS.find(p => p.id === freeDaysPlan)?.name}</strong> لمدة <strong>{freeDays} يوم</strong></p>
+                    <p>تاريخ الانتهاء الجديد المتوقع: <strong>{new Date(Math.max(currentCenter.subscriptionEndDate || Date.now(), Date.now()) + freeDays * 86400000).toLocaleDateString("ar-EG")}</strong></p>
+                  </div>
+                </div>
+
+                {/* Plan Limits Preview */}
+                <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+                  <h3 className="text-sm font-bold text-ink mb-3 flex items-center gap-2"><SlidersHorizontal className="h-4 w-4 text-brand-500" /> حدود الخطة الحالية</h3>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {([
+                      { key: "maxStudents" as const, label: "أقصى عدد طلاب", icon: GraduationCap },
+                      { key: "maxTeachers" as const, label: "أقصى عدد معلمين", icon: UserCog },
+                      { key: "maxStaff" as const, label: "أقصى عدد موظفين", icon: UserCog },
+                      { key: "maxGroups" as const, label: "مجموعات", icon: Building2 },
+                      { key: "maxClassrooms" as const, label: "قاعات", icon: Building2 },
+                      { key: "maxSchedules" as const, label: "حصص", icon: CalendarPlus },
+                    ]).map((item) => {
+                      const val = currentCenter.customLimits?.[item.key] ?? DEFAULT_LIMITS[currentCenter.subscriptionPlan || "free"]?.[item.key] ?? 0;
+                      return (
+                        <div key={item.key} className="rounded-xl bg-elevated/40 p-3 text-center">
+                          <item.icon className="mx-auto h-4 w-4 text-brand-500 mb-1" />
+                          <p className="text-lg font-extrabold text-ink">{val === 99999 ? "∞" : val}</p>
+                          <p className="text-[10px] text-muted">{item.label}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Recent Timeline */}
+                {timeline.length > 0 && (
+                  <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
+                    <h3 className="text-sm font-bold text-ink mb-3 flex items-center gap-2"><History className="h-4 w-4 text-brand-500" /> آخر العمليات</h3>
+                    <div className="space-y-2">
+                      {timeline.slice(0, 5).map((evt) => (
+                        <div key={evt.id} className="flex items-center gap-3 rounded-lg bg-elevated/30 p-2.5">
+                          <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white text-xs font-bold",
+                            evt.type === "upgrade" ? "bg-emerald-500" : evt.type === "free_days" ? "bg-amber-500" : evt.type === "downgrade" ? "bg-rose-500" : "bg-brand-500"
+                          )}>
+                            {evt.type === "upgrade" ? "↑" : evt.type === "free_days" ? "🎁" : evt.type === "downgrade" ? "↓" : "•"}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-bold text-ink truncate">{evt.title}</p>
+                            <p className="text-[10px] text-muted truncate">{evt.description}</p>
+                          </div>
+                          <span className="text-[10px] text-faint whitespace-nowrap">{new Date(evt.timestamp).toLocaleDateString("ar-EG")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -544,75 +820,38 @@ function CenterDetailDrawer({ center, admin, onClose, onUpdate }: {
               </div>
             )}
 
-            {tab === "subscription" && (
-              <div className="space-y-4">
-                {actionMsg && (
-                  <div className={cn("rounded-xl px-4 py-3 text-sm font-medium", actionMsg.includes("بنجاح") || actionMsg.includes("تم") ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300" : actionMsg.includes("فشل") ? "bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" : "bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-300")}>
-                    {actionMsg}
+            {/* ============== HISTORY/AUDIT TAB ============== */}
+            {tab === "history" && (
+              <div className="rounded-2xl border border-line bg-surface p-5">
+                <div className="mb-4 flex items-center gap-2"><History className="h-4 w-4 text-brand-500" /><h3 className="text-sm font-bold text-ink">سجل العمليات الإدارية</h3></div>
+                {loadingTimeline ? (
+                  <div className="flex justify-center py-10"><Loader2 className="h-6 w-6 animate-spin text-brand-500" /></div>
+                ) : timeline.length === 0 ? (
+                  <div className="py-10 text-center text-muted">
+                    <History className="mx-auto h-8 w-8 text-faint mb-2" />
+                    <p className="text-xs">لا توجد عمليات مسجلة لهذا السنتر بعد.</p>
                   </div>
-                )}
-                <div className="rounded-2xl border border-line bg-surface p-5">
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <p className="mb-2 text-xs font-semibold text-muted">الخطة</p>
-                      <select value={plan} onChange={(e) => setPlan(e.target.value as SubscriptionPlan)} className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink">
-                        {PLAN_DEFINITIONS.map((p) => <option key={p.id} value={p.id}>{p.name} — {p.price} ج.م/شهر</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <p className="mb-2 text-xs font-semibold text-muted">المدة</p>
-                      <div className="flex flex-wrap gap-2">
-                        {durations.map((d) => (
-                          <button key={d.v} onClick={() => setDays(d.v)} className={cn("rounded-lg border px-3 py-2 text-xs font-semibold transition", days === d.v ? "border-brand-400 bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-200" : "border-line text-muted hover:bg-elevated")}>{d.l}</button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* live preview of the resulting end date (activates from today) */}
-                  <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl bg-brand-50/60 px-4 py-3 text-xs dark:bg-brand-500/10">
-                    <CalendarPlus className="h-4 w-4 text-brand-600" />
-                    <span className="text-muted">عند التفعيل لمدة <b className="text-ink">{days} يوم</b> ينتهي في:</span>
-                    <b className="text-brand-700 dark:text-brand-200">{new Date(Date.now() + days * 86400000).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" })}</b>
-                  </div>
-
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <button onClick={doActivate} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-emerald-700"><CheckCircle2 className="h-4 w-4" /> تفعيل الاشتراك</button>
-                    <button onClick={doExtend} className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg transition hover:bg-brand-700"><CalendarPlus className="h-4 w-4" /> تمديد</button>
-                    <button onClick={doCancel} className="inline-flex items-center gap-2 rounded-xl border border-rose-300 bg-rose-50 px-5 py-2.5 text-sm font-bold text-rose-600 transition hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-500/10"><Ban className="h-4 w-4" /> إلغاء</button>
-                  </div>
-                </div>
-
-                {/* 🔑 License Key Generator Removed */}
-                <div className="rounded-2xl border border-line bg-surface p-5">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Key className="h-5 w-5 text-brand-600" />
-                    <p className="text-sm font-bold text-ink">توليد مفاتيح التراخيص (License Generator)</p>
-                  </div>
-                  <p className="text-xs text-muted mb-4 leading-relaxed">
-                    تم نقل نظام توليد مفاتيح التراخيص إلى قسم "مركز إدارة التراخيص" المخصص، وذلك لتوحيد جهة التوليد وتوفير مزايا البحث وتتبع التراخيص المتقدمة.
-                  </p>
-                  <button
-                    onClick={() => {
-                      onClose();
-                    }}
-                    className="inline-flex items-center gap-2 rounded-xl border border-line bg-surface px-5 py-2 text-xs font-bold text-ink transition hover:bg-elevated cursor-pointer"
-                  >
-                    العودة لمركز إدارة التراخيص
-                  </button>
-                </div>
-                <div className="rounded-2xl border border-line bg-surface p-5">
-                  <p className="mb-2 text-xs font-semibold text-muted">عرض الخطط المتاحة:</p>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    {PLAN_DEFINITIONS.map((p) => (
-                      <div key={p.id} className={cn("rounded-xl border p-3", plan === p.id ? "border-brand-400 bg-brand-50/50 dark:bg-brand-500/5" : "border-line")}>
-                        <p className="text-sm font-bold text-ink">{p.name}</p>
-                        <p className="text-lg font-extrabold text-brand-600">{p.price} <span className="text-xs font-normal text-muted">ج.م/شهر</span></p>
-                        <p className="text-[10px] text-muted">{p.maxStudents === 99999 ? "طلاب غير محدود" : `حتى ${p.maxStudents} طالب`}</p>
+                ) : (
+                  <div className="space-y-3">
+                    {timeline.map((evt) => (
+                      <div key={evt.id} className="flex items-start gap-3 rounded-xl border border-line bg-elevated/20 p-3">
+                        <div className={cn("mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white text-xs font-bold",
+                          evt.type === "upgrade" ? "bg-emerald-500" : evt.type === "free_days" ? "bg-amber-500" : evt.type === "downgrade" ? "bg-rose-500" : evt.type === "activate" ? "bg-brand-500" : evt.type === "discount" ? "bg-violet-500" : "bg-slate-500"
+                        )}>
+                          {evt.type === "upgrade" ? "↑" : evt.type === "free_days" ? "🎁" : evt.type === "downgrade" ? "↓" : evt.type === "activate" ? "✓" : "•"}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-bold text-ink">{evt.title}</p>
+                          <p className="text-xs text-muted mt-0.5">{evt.description}</p>
+                          <div className="mt-1.5 flex items-center gap-3 text-[10px] text-faint">
+                            <span className="flex items-center gap-1"><Clock className="h-3 w-3" />{new Date(evt.timestamp).toLocaleString("ar-EG")}</span>
+                            <span>بواسطة: {evt.adminEmail}</span>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
-                </div>
+                )}
               </div>
             )}
 

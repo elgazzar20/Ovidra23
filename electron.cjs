@@ -52,9 +52,21 @@ process.on("uncaughtException", (error) => {
   );
 });
 
-// Global User-Agent override to bypass Google OAuth blocks in embedded windows
+// Global User-Agent override and DevTools shortcut blocker
 app.on("web-contents-created", (event, contents) => {
   contents.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+  
+  // Completely prevent opening DevTools via shortcuts (F12, Ctrl+Shift+I, Cmd+Alt+I) in production
+  if (!isDev) {
+    contents.on("before-input-event", (e, input) => {
+      const isF12 = input.key === "F12";
+      const isDevToolsShortcut = (input.control || input.meta) && input.shift && input.key.toLowerCase() === "i";
+      const isMacDevTools = input.meta && input.alt && input.key.toLowerCase() === "i";
+      if (isF12 || isDevToolsShortcut || isMacDevTools) {
+        e.preventDefault();
+      }
+    });
+  }
 });
 
 // Boot local Express server in production so that standard HTTP/localhost origin is used (enabling Google Sign-In)
@@ -109,6 +121,7 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false,
+      devTools: isDev,
     },
   });
 
@@ -131,8 +144,31 @@ function createWindow() {
   log(`Loading application (isDev: ${isDev})...`);
   loadWithRetry();
   
-  // Open DevTools in production to assist in debugging/tracing console errors
-  mainWindow.webContents.openDevTools();
+  // Open DevTools only in development mode
+  if (isDev) {
+    mainWindow.webContents.openDevTools();
+  }
+
+  // Register right-click context menu for easy Copy, Cut, Paste, and Select All
+  mainWindow.webContents.on("context-menu", (e, params) => {
+    const contextMenuTemplate = [];
+    if (params.editFlags.canCut) {
+      contextMenuTemplate.push({ label: "قص (Cut)", role: "cut" });
+    }
+    if (params.editFlags.canCopy) {
+      contextMenuTemplate.push({ label: "نسخ (Copy)", role: "copy" });
+    }
+    if (params.editFlags.canPaste) {
+      contextMenuTemplate.push({ label: "لصق (Paste)", role: "paste" });
+    }
+    if (contextMenuTemplate.length > 0) {
+      contextMenuTemplate.push({ type: "separator" });
+    }
+    contextMenuTemplate.push({ label: "تحديد الكل (Select All)", role: "selectAll" });
+
+    const menu = Menu.buildFromTemplate(contextMenuTemplate);
+    menu.popup(mainWindow);
+  });
 
   // Keep OAuth popups inside Electron so Firebase Google sign-in can complete.
   // Non-auth links still open in the user's default browser.
@@ -151,6 +187,7 @@ function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: false,
+            devTools: isDev,
           },
         },
       };

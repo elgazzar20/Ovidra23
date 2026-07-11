@@ -11,7 +11,7 @@ import {
 } from "../components/ui";
 import { FeatureLockOverlay } from "../components/FeatureLockOverlay";
 import { generateStudentPdf } from "../lib/pdf";
-import { generateInsight, geminiChat, DEFAULT_GEMINI_KEY } from "../lib/ai";
+import { generateInsight, geminiChat, getEffectiveApiKey } from "../lib/ai";
 import { uid, now, nextTeacherCode, nextStudentCode } from "../lib/db";
 import { cn } from "../utils/cn";
 
@@ -129,7 +129,7 @@ function RichText({ text }: { text: string }) {
 /* ─────────── main component ─────────── */
 
 export function AIAssistant() {
-  const { db, t, upsert, remove, lang, canUseFeature, subscriptionPlan, staff, staffActivity } = useApp();
+  const { db, t, upsert, remove, lang, canUseFeature, subscriptionPlan, staff, staffActivity, globalSettings } = useApp();
   const isLocked = !canUseFeature("ai_assistant");
   const isAr = lang === "ar";
 
@@ -163,7 +163,7 @@ export function AIAssistant() {
   const [input, setInput] = useState("");
   const [wizard, setWizard] = useState<WizardStep>(null);
   const [loading, setLoading] = useState(false);
-  const apiKey = db.profile.geminiApiKey || DEFAULT_GEMINI_KEY;
+  const apiKey = getEffectiveApiKey(db.profile.geminiApiKey, globalSettings?.geminiApiKey);
   const hasGemini = !!apiKey;
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -697,9 +697,12 @@ ${historyText}
         if (
           errMsg.includes("403") ||
           errMsg.includes("400") ||
+          errMsg.includes("401") ||
           errMsg.toLowerCase().includes("key") ||
           errMsg.toLowerCase().includes("disabled") ||
-          errMsg.toLowerCase().includes("project")
+          errMsg.toLowerCase().includes("project") ||
+          errMsg.toLowerCase().includes("unauthorized") ||
+          errMsg.toLowerCase().includes("unauthenticated")
         ) {
           finalMsg = isAr
             ? `⚠️ **تنبيه:** يبدو أن مفتاح Gemini API الحالي غير مفعل أو غير صالح (أو تم تعطيله في مشروع Google Cloud).\n\n` +

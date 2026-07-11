@@ -172,6 +172,40 @@ function Root() {
     return () => window.removeEventListener("navigate", handler);
   }, []);
 
+  // ===== APP LOCK GATING =====
+  if (globalSettings?.appLock?.enabled && !isSuperAdmin) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-bg p-4 text-center">
+        <div className="w-full max-w-lg rounded-2xl border border-line bg-surface p-8 shadow-lg">
+          <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-500/10 text-rose-600 animate-pulse">
+            <AlertTriangle className="h-8 w-8" />
+          </div>
+          <h2 className="text-xl font-extrabold text-ink mb-3">
+            {lang === "ar" ? "تحديث التطبيق مطلوب" : "Application Update Required"}
+          </h2>
+          <p className="text-xs text-muted leading-relaxed mb-6 whitespace-pre-line">
+            {globalSettings.appLock.message || (lang === "ar"
+              ? "تم إيقاف هذا الإصدار من التطبيق مؤقتاً لإجراء تحديثات هامة. يرجى تحميل النسخة الجديدة للاستمرار."
+              : "This application version is locked for updates. Please download the latest version to proceed.")}
+          </p>
+          <div className="flex flex-col gap-3">
+            {globalSettings.appLock.downloadUrl && (
+              <a
+                href={globalSettings.appLock.downloadUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-500 hover:bg-brand-600 text-white py-3 text-sm font-bold transition shadow-lg shadow-brand-500/25 cursor-pointer"
+              >
+                <span>{lang === "ar" ? "تحميل التحديث الجديد" : "Download New Update"}</span>
+              </a>
+            )}
+            <span className="text-[10px] text-faint mt-2">{lang === "ar" ? "أوفيدرا للخدمات البرمجية" : "Ovidra Software Services"}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ===== MAINTENANCE MODE GATING =====
   if (globalSettings?.maintenanceMode?.enabled && !isSuperAdmin && !bypassMaintenance) {
     return (

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Bot, CheckCircle2, HelpCircle, Loader2, Send, Sparkles, Trash2, User } from "lucide-react";
 import { pushToast } from "../../components/ui";
 import { cn } from "../../utils/cn";
-import { DEFAULT_GEMINI_KEY, geminiChat } from "../../lib/ai";
+import { DEFAULT_GEMINI_KEY, geminiChat, getEffectiveApiKey } from "../../lib/ai";
 import { type CenterRecord, fetchGlobalSettings } from "../../lib/superadmin";
 
 interface Message {
@@ -105,14 +105,12 @@ export function AiCopilotTab({ admin, centers }: AiCopilotTabProps) {
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [apiKey, setApiKey] = useState(DEFAULT_GEMINI_KEY);
+  const [apiKey, setApiKey] = useState(() => getEffectiveApiKey("", DEFAULT_GEMINI_KEY));
 
   useEffect(() => {
     const loadKey = () => {
       fetchGlobalSettings().then((settings) => {
-        if (settings?.geminiApiKey) {
-          setApiKey(settings.geminiApiKey);
-        }
+        setApiKey(getEffectiveApiKey("", settings?.geminiApiKey));
       });
     };
     loadKey();
@@ -187,9 +185,12 @@ ${clean}
       if (
         message.includes("403") ||
         message.includes("400") ||
+        message.includes("401") ||
         message.toLowerCase().includes("key") ||
         message.toLowerCase().includes("disabled") ||
-        message.toLowerCase().includes("project")
+        message.toLowerCase().includes("project") ||
+        message.toLowerCase().includes("unauthorized") ||
+        message.toLowerCase().includes("unauthenticated")
       ) {
         errorText = `⚠️ **تنبيه:** يبدو أن مفتاح Gemini API الحالي غير مفعل أو غير صالح (أو تم تعطيله في مشروع Google Cloud).\n\n` +
           `**لتشغيل المساعد الذكي للسوبر أدمن:**\n` +

@@ -61,7 +61,7 @@ import {
   type User as FbUser,
   signInAnonymously,
 } from "firebase/auth";
-import { doc, getDoc, setDoc, collection, query, where, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot } from "firebase/firestore";
 import { verifyLicenseKey } from "../lib/license";
 import { fetchGlobalSettings, checkSuperAdminRole, type GlobalPlatformSettings } from "../lib/superadmin";
 import { pushToast } from "../components/ui";
@@ -689,7 +689,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(SESSION_KEY, JSON.stringify(u.uid));
     setUser(u);
     
-    // Synchronously set subscription plan state to avoid transition lag or demo leaks
+    // Synchronously set subscription plan state from localStorage as initial value
     const cid = u.centerId || u.uid;
     if (cid && cid !== DEMO_CENTER) {
       const storedPlan = loadPref(`cpd_plan_${cid}`, "free") as "free" | "pro" | "enterprise";
@@ -700,6 +700,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
       
       const storedStatus = localStorage.getItem(`cpd_plan_status_${cid}`);
       setSubscriptionStatus(storedStatus ? JSON.parse(storedStatus) : "trialing");
+
+      // Immediately fetch latest plan from Firestore to override stale localStorage
+      if (FIREBASE_ENABLED && firestoreDb && auth?.currentUser) {
+        getDoc(doc(firestoreDb, "centers", cid)).then((snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            const plan = (data.subscriptionPlan as "free" | "pro" | "enterprise") || "free";
+            setSubscriptionPlanState(plan);
+            localStorage.setItem(`cpd_plan_${cid}`, JSON.stringify(plan));
+            
+            const endDate = data.subscriptionEndDate as number | undefined;
+            if (endDate) {
+              setSubscriptionEndDate(endDate);
+              localStorage.setItem(`cpd_plan_end_${cid}`, String(endDate));
+            }
+            
+            const subStatus = data.subscriptionStatus || "trialing";
+            setSubscriptionStatus(subStatus);
+            localStorage.setItem(`cpd_plan_status_${cid}`, JSON.stringify(subStatus));
+            
+            const cStatus = data.status || "active";
+            setCenterStatus(cStatus);
+            localStorage.setItem(`cpd_center_status_${cid}`, JSON.stringify(cStatus));
+
+            const cLimits = data.customLimits as { maxStudents: number; maxTeachers: number; maxStaff: number } | undefined;
+            if (cLimits) {
+              setCustomLimits(cLimits);
+              localStorage.setItem(`cpd_custom_limits_${cid}`, JSON.stringify(cLimits));
+            }
+
+            if (data.discountAmount) {
+              setDiscountAmount(data.discountAmount);
+              localStorage.setItem(`cpd_plan_discount_${cid}`, String(data.discountAmount));
+            }
+            if (data.discountReason) {
+              setDiscountReason(data.discountReason);
+              localStorage.setItem(`cpd_plan_discount_reason_${cid}`, data.discountReason);
+            }
+          }
+        }).catch(() => { /* non-blocking */ });
+      }
     }
   }, []);
 
@@ -1158,8 +1199,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       logPlatformEvent("logout", "auth", user.uid, user.email);
     }
     localStorage.removeItem(SESSION_KEY);
+    // NOTE: Do NOT reset subscriptionPlan to "free" here!
+    // The plan data stays in localStorage keyed by centerId.
+    // When the user logs back in, beginSession will read from localStorage first,
+    // then onSnapshot will sync the authoritative value from Firestore.
     setUser(null);
     setPortalCenterId(null);
+    // Reset UI state but don't clear localStorage plan data
     setSubscriptionPlanState("free");
     setSubscriptionEndDate(undefined);
     setDiscountAmount(undefined);
@@ -1858,54 +1904,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ]);
       if (snap.exists()) {
         const data = snap.data();
-        const plan = (data.subscriptionPlan as "free" | "pro" | "enterprise") || "free";
-        const endDate = data.subscriptionEndDate as number | undefined;
-        const discAmt = data.discountAmount as number | undefined;
-        const discReason = data.discountReason as string | undefined;
-        const subStatus = data.subscriptionStatus || "trialing";
-        const cStatus = data.status || "active";
-        const cLimits = data.customLimits as { maxStudents: number; maxTeachers: number; maxStaff: number } | undefined;
-        
-        setSubscriptionPlanState(plan);
-        localStorage.setItem(`cpd_plan_${centerId}`, JSON.stringify(plan));
-        
-        setSubscriptionStatus(subStatus);
-        localStorage.setItem(`cpd_plan_status_${centerId}`, JSON.stringify(subStatus));
-        
-        setCenterStatus(cStatus);
-        localStorage.setItem(`cpd_center_status_${centerId}`, JSON.stringify(cStatus));
-
-        if (cLimits) {
-          setCustomLimits(cLimits);
-          localStorage.setItem(`cpd_custom_limits_${centerId}`, JSON.stringify(cLimits));
-        } else {
-          setCustomLimits(undefined);
-          localStorage.removeItem(`cpd_custom_limits_${centerId}`);
-        }
-
-        if (endDate) {
-          setSubscriptionEndDate(endDate);
-          localStorage.setItem(`cpd_plan_end_${centerId}`, String(endDate));
-        } else {
-          setSubscriptionEndDate(undefined);
-          localStorage.removeItem(`cpd_plan_end_${centerId}`);
-        }
-
-        if (discAmt) {
-          setDiscountAmount(discAmt);
-          localStorage.setItem(`cpd_plan_discount_${centerId}`, String(discAmt));
-        } else {
-          setDiscountAmount(undefined);
-          localStorage.removeItem(`cpd_plan_discount_${centerId}`);
-        }
-
-        if (discReason) {
-          setDiscountReason(discReason);
-          localStorage.setItem(`cpd_plan_discount_reason_${centerId}`, discReason);
-        } else {
-          setDiscountReason(undefined);
-          localStorage.removeItem(`cpd_plan_discount_reason_${centerId}`);
-        }
+        applySubscriptionDataFromFirestore(data, centerId);
 
         // Fetch custom features overrides
         try {
@@ -1925,7 +1924,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           console.warn("[AppContext] Failed to fetch custom features from Firestore:", featErr);
         }
       } else {
-        // Document does not exist in Firestore yet — let's upload our current local plan status to Firestore instead of overwriting it
+        // Document does not exist in Firestore yet — upload current local plan status
         const localPlan = loadPref(`cpd_plan_${centerId}`, "free") as "free" | "pro" | "enterprise";
         const localEndDate = localStorage.getItem(`cpd_plan_end_${centerId}`);
         const localStatus = localStorage.getItem(`cpd_plan_status_${centerId}`);
@@ -1949,34 +1948,151 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [centerId, user]);
 
-  // Refresh subscription plan when user logs in or center changes
-  useEffect(() => {
-    if (user && centerId !== DEMO_CENTER) {
-      setSubscriptionPlanState(loadPref(`cpd_plan_${centerId}`, "free"));
-      const val = localStorage.getItem(`cpd_plan_end_${centerId}`);
-      setSubscriptionEndDate(val ? Number(val) : undefined);
+  /**
+   * CRITICAL HELPER: Applies subscription data from a Firestore document snapshot
+   * to all local state + localStorage. Used by both refreshSubscriptionPlan and onSnapshot.
+   */
+  const applySubscriptionDataFromFirestore = useCallback((data: Record<string, any>, cid: string) => {
+    const plan = (data.subscriptionPlan as "free" | "pro" | "enterprise") || "free";
+    const endDate = data.subscriptionEndDate as number | undefined;
+    const discAmt = data.discountAmount as number | undefined;
+    const discReason = data.discountReason as string | undefined;
+    const subStatus = data.subscriptionStatus || "trialing";
+    const cStatus = data.status || "active";
+    const cLimits = data.customLimits as { maxStudents: number; maxTeachers: number; maxStaff: number } | undefined;
 
-      const dAmt = localStorage.getItem(`cpd_plan_discount_${centerId}`);
-      setDiscountAmount(dAmt ? Number(dAmt) : undefined);
-      const dReason = localStorage.getItem(`cpd_plan_discount_reason_${centerId}`);
-      setDiscountReason(dReason ?? undefined);
+    setSubscriptionPlanState(plan);
+    localStorage.setItem(`cpd_plan_${cid}`, JSON.stringify(plan));
 
-      const subStatVal = localStorage.getItem(`cpd_plan_status_${centerId}`);
-      setSubscriptionStatus(subStatVal ? JSON.parse(subStatVal) : "trialing");
-      const cStatVal = localStorage.getItem(`cpd_center_status_${centerId}`);
-      setCenterStatus(cStatVal ? JSON.parse(cStatVal) : "active");
+    setSubscriptionStatus(subStatus);
+    localStorage.setItem(`cpd_plan_status_${cid}`, JSON.stringify(subStatus));
 
-      refreshSubscriptionPlan();
-      // Also refresh every 5 minutes to catch admin changes
-      const interval = setInterval(refreshSubscriptionPlan, 5 * 60 * 1000);
-      return () => clearInterval(interval);
-    } else if (centerId === DEMO_CENTER) {
-      setSubscriptionPlanState("enterprise");
-      setSubscriptionEndDate(undefined);
-      setDiscountAmount(undefined);
-      setDiscountReason(undefined);
+    setCenterStatus(cStatus);
+    localStorage.setItem(`cpd_center_status_${cid}`, JSON.stringify(cStatus));
+
+    if (cLimits) {
+      setCustomLimits(cLimits);
+      localStorage.setItem(`cpd_custom_limits_${cid}`, JSON.stringify(cLimits));
+    } else {
+      setCustomLimits(undefined);
+      localStorage.removeItem(`cpd_custom_limits_${cid}`);
     }
-  }, [user, centerId, refreshSubscriptionPlan, fbUser]);
+
+    if (endDate) {
+      setSubscriptionEndDate(endDate);
+      localStorage.setItem(`cpd_plan_end_${cid}`, String(endDate));
+    } else {
+      setSubscriptionEndDate(undefined);
+      localStorage.removeItem(`cpd_plan_end_${cid}`);
+    }
+
+    if (discAmt) {
+      setDiscountAmount(discAmt);
+      localStorage.setItem(`cpd_plan_discount_${cid}`, String(discAmt));
+    } else {
+      setDiscountAmount(undefined);
+      localStorage.removeItem(`cpd_plan_discount_${cid}`);
+    }
+
+    if (discReason) {
+      setDiscountReason(discReason);
+      localStorage.setItem(`cpd_plan_discount_reason_${cid}`, discReason);
+    } else {
+      setDiscountReason(undefined);
+      localStorage.removeItem(`cpd_plan_discount_reason_${cid}`);
+    }
+  }, []);
+
+  // ===== REAL-TIME SUBSCRIPTION SYNC via Firestore onSnapshot =====
+  // This replaces the old 5-minute polling with instant updates.
+  // When super admin changes a user's plan, the user sees it within seconds.
+  useEffect(() => {
+    if (!user || centerId === DEMO_CENTER) {
+      if (centerId === DEMO_CENTER) {
+        setSubscriptionPlanState("enterprise");
+        setSubscriptionEndDate(undefined);
+        setDiscountAmount(undefined);
+        setDiscountReason(undefined);
+      }
+      return;
+    }
+
+    // 1. Load cached values from localStorage immediately (instant UI)
+    setSubscriptionPlanState(loadPref(`cpd_plan_${centerId}`, "free"));
+    const val = localStorage.getItem(`cpd_plan_end_${centerId}`);
+    setSubscriptionEndDate(val ? Number(val) : undefined);
+    const dAmt = localStorage.getItem(`cpd_plan_discount_${centerId}`);
+    setDiscountAmount(dAmt ? Number(dAmt) : undefined);
+    const dReason = localStorage.getItem(`cpd_plan_discount_reason_${centerId}`);
+    setDiscountReason(dReason ?? undefined);
+    const subStatVal = localStorage.getItem(`cpd_plan_status_${centerId}`);
+    setSubscriptionStatus(subStatVal ? JSON.parse(subStatVal) : "trialing");
+    const cStatVal = localStorage.getItem(`cpd_center_status_${centerId}`);
+    setCenterStatus(cStatVal ? JSON.parse(cStatVal) : "active");
+
+    // 2. Set up real-time Firestore listener for center document
+    let unsubCenter: (() => void) | null = null;
+    let unsubFeatures: (() => void) | null = null;
+
+    if (FIREBASE_ENABLED && firestoreDb && auth?.currentUser) {
+      // Real-time listener on centers/{centerId}
+      try {
+        unsubCenter = onSnapshot(
+          doc(firestoreDb, "centers", centerId),
+          (snap) => {
+            if (snap.exists()) {
+              const data = snap.data();
+              console.log(`[onSnapshot:center] Real-time update for ${centerId}:`, data.subscriptionPlan, data.subscriptionStatus);
+              applySubscriptionDataFromFirestore(data, centerId);
+            }
+          },
+          (error) => {
+            console.warn("[onSnapshot:center] Error, falling back to polling:", error.message);
+            // Fallback: do a one-time fetch
+            refreshSubscriptionPlan();
+          }
+        );
+      } catch (e) {
+        console.warn("[onSnapshot:center] Failed to set up listener:", e);
+      }
+
+      // Real-time listener on centers/{centerId}/config/features
+      try {
+        unsubFeatures = onSnapshot(
+          doc(firestoreDb, "centers", centerId, "config", "features"),
+          (snap) => {
+            if (snap.exists()) {
+              const featData = snap.data() as Record<string, boolean>;
+              console.log(`[onSnapshot:features] Real-time features update for ${centerId}`);
+              setCustomFeatures(featData);
+              localStorage.setItem(`cpd_features_${centerId}`, JSON.stringify(featData));
+            } else {
+              setCustomFeatures({});
+              localStorage.removeItem(`cpd_features_${centerId}`);
+            }
+          },
+          (error) => {
+            console.warn("[onSnapshot:features] Error:", error.message);
+          }
+        );
+      } catch (e) {
+        console.warn("[onSnapshot:features] Failed to set up listener:", e);
+      }
+    } else {
+      // Firebase not ready yet — do a one-time fetch as fallback
+      refreshSubscriptionPlan();
+    }
+
+    // 3. Also keep a slower polling fallback (every 10 min) for edge cases
+    //    (e.g., if onSnapshot disconnects silently)
+    const interval = setInterval(refreshSubscriptionPlan, 10 * 60 * 1000);
+
+    return () => {
+      clearInterval(interval);
+      if (unsubCenter) unsubCenter();
+      if (unsubFeatures) unsubFeatures();
+    };
+  }, [user, centerId, refreshSubscriptionPlan, fbUser, applySubscriptionDataFromFirestore]);
 
   const restoreFromBackup = useCallback(
     (ts: number) => {

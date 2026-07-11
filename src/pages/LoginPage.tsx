@@ -123,7 +123,7 @@ export function LoginPage({
 
 /* ============================================================= LOGIN FORM */
 function LoginForm({ t, isAr, defaultMode, onParentPortal, onStudentPortal, onTeacherPortal }: { t: T; isAr: boolean; defaultMode: "in" | "up"; onParentPortal: () => void; onStudentPortal: () => void; onTeacherPortal: () => void }) {
-  const { signIn, signUp, signInWithGoogle, demoAccess } = useApp();
+  const { signIn, signUp, signInWithGoogle } = useApp();
   const [mode, setMode] = useState<"in" | "up">(defaultMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -254,19 +254,6 @@ function LoginForm({ t, isAr, defaultMode, onParentPortal, onStudentPortal, onTe
         <GoogleIcon />
         {t("auth.google")}
       </motion.button>
-
-      {/* quick access - owner */}
-      <div className="mt-4">
-        <motion.button
-          whileHover={{ y: -1, borderColor: "rgb(109 93 252)" }}
-          whileTap={{ scale: 0.98 }}
-          onClick={() => demoAccess("owner")}
-          className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-brand-200 bg-brand-50/50 text-sm font-bold text-brand-700 transition dark:border-brand-500/30 dark:bg-brand-500/10 dark:text-brand-200 sm:h-[46px]"
-        >
-          <GraduationCap className="h-4 w-4" />
-          {t("auth.asOwner")}
-        </motion.button>
-      </div>
 
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
         {/* student portal card */}

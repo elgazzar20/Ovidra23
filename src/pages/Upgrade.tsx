@@ -109,6 +109,33 @@ export function Upgrade({ onClose }: { onClose: () => void }) {
           </motion.div>
         )}
 
+        {/* Plan Extension / Free Days Banner (shown when plan is active and was recently updated by admin) */}
+        {!isSubscriptionExpired && subscriptionPlan !== "free" && subscriptionEndDate && subscriptionEndDate > Date.now() && (() => {
+          const daysLeft = Math.ceil((subscriptionEndDate - Date.now()) / 86400000);
+          const planName = subscriptionPlan === "pro" ? (isAr ? "الاحترافية" : "Pro") : subscriptionPlan === "enterprise" ? (isAr ? "المؤسسية" : "Enterprise") : subscriptionPlan;
+          return (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-8 border border-brand-500/30 bg-gradient-to-br from-brand-50 to-violet-50 p-5 rounded-2xl text-center dark:from-brand-500/10 dark:to-violet-500/10 relative overflow-hidden"
+            >
+              <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-brand-300/20 blur-2xl" />
+              <div className="absolute -left-8 -bottom-8 h-24 w-24 rounded-full bg-violet-300/20 blur-2xl" />
+              <div className="relative">
+                <Crown className="mx-auto h-7 w-7 text-brand-600 dark:text-brand-400 mb-2" />
+                <h3 className="text-base font-bold text-brand-700 dark:text-brand-300">
+                  {isAr ? `خطة ${planName} مفعّلة ✨` : `${planName} Plan Active ✨`}
+                </h3>
+                <p className="mt-1 text-sm text-brand-600 dark:text-brand-300">
+                  {isAr
+                    ? `متبقي ${daysLeft} يوم على انتهاء اشتراكك. تاريخ الانتهاء: ${new Date(subscriptionEndDate).toLocaleDateString("ar-EG")}`
+                    : `${daysLeft} days remaining. Expires: ${new Date(subscriptionEndDate).toLocaleDateString()}`}
+                </p>
+              </div>
+            </motion.div>
+          );
+        })()}
+
         {/* Special Discount Alert Banner */}
         {discountAmount && (
           <motion.div
