@@ -6,7 +6,7 @@ import {
   TrendingUp, DollarSign, AlertCircle, Loader2, RefreshCw, Flag,
   CalendarPlus, Zap, Eye, SlidersHorizontal, Send,
   ArrowLeft, Mail, Crown, Star, MessageSquare, Check, BellRing, LifeBuoy,
-  Key, Settings, Sparkles, Gift, Clock, Download, History
+  Key, Settings, Sparkles, Gift, Clock, Download, History, CalendarDays, X, Shield
 } from "lucide-react";
 import {
   fetchAllCenters, fetchAuditLogs,
@@ -372,6 +372,11 @@ function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }:
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [loadingTimeline, setLoadingTimeline] = useState(false);
 
+  // Duration modal state — shown before activating a plan
+  const [durationModal, setDurationModal] = useState<{ open: boolean; plan: SubscriptionPlan | null }>({ open: false, plan: null });
+  const [selectedDuration, setSelectedDuration] = useState<number>(30);
+  const [customDuration, setCustomDuration] = useState<string>("");
+
   // Sync center details in real-time from Firestore
   useEffect(() => {
     setCurrentCenter(initialCenter);
@@ -465,12 +470,23 @@ function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }:
     setLoadingF(false);
   };
 
-  const handleQuickPlanSwitch = async (plan: SubscriptionPlan) => {
-    if (switchingPlan) return;
+  // Open duration modal before switching plan
+  const openPlanDurationModal = (plan: SubscriptionPlan) => {
+    setDurationModal({ open: true, plan });
+    setSelectedDuration(30);
+    setCustomDuration("");
+  };
+
+  const handleQuickPlanSwitch = async () => {
+    if (switchingPlan || !durationModal.plan) return;
     setSwitchingPlan(true);
+    const plan = durationModal.plan;
+    const duration = selectedDuration === -1 ? (parseInt(customDuration) || 30) : selectedDuration;
     try {
-      await quickPlanSwitch(currentCenter.id, plan, admin);
-      pushToast(`تم تبديل الخطة إلى ${planLabels[plan]} بنجاح! 🎉`);
+      const { newEndDate } = await quickPlanSwitch(currentCenter.id, plan, admin, duration);
+      const endDateStr = newEndDate ? new Date(newEndDate).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" }) : "—";
+      pushToast(`تم تفعيل خطة ${planLabels[plan]} بنجاح! تنتهي في: ${endDateStr} 🎉`);
+      setDurationModal({ open: false, plan: null });
       onUpdate();
     } catch (e) {
       pushToast("فشل تبديل الخطة. حاول مرة أخرى.");
@@ -485,7 +501,9 @@ function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }:
     setGrantingDays(true);
     try {
       const { newEndDate } = await grantFreeDays(currentCenter.id, freeDays, freeDaysPlan, admin);
-      pushToast(`تم منح ${freeDays} أيام مجانية! تاريخ الانتهاء الجديد: ${new Date(newEndDate).toLocaleDateString("ar-EG")} 🎁`);
+      const endDateStr = new Date(newEndDate).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" });
+      const remainingDays = Math.ceil((newEndDate - Date.now()) / 86400000);
+      pushToast(`تم منح ${freeDays} ${freeDays === 1 ? "يوم" : "أيام"} مجانية! تاريخ الانتهاء: ${endDateStr} (متبقي ${remainingDays} يوم) 🎁`);
       onUpdate();
     } catch (e) {
       pushToast("فشل منح الأيام المجانية. حاول مرة أخرى.");
@@ -611,9 +629,9 @@ function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }:
                 {/* Quick Plan Switch */}
                 <div className="rounded-2xl border border-line bg-surface p-5 shadow-sm">
                   <h3 className="text-sm font-black text-ink mb-4 flex items-center gap-2">
-                    <Zap className="h-4 w-4 text-brand-500" /> تبديل الخطة لحظياً
+                    <Zap className="h-4 w-4 text-brand-500" /> تفعيل / تبديل الخطة
                   </h3>
-                  <p className="text-xs text-muted mb-4">اختر خطة لتطبيقها فوراً على هذا السنتر. سيتم تحديث المميزات والحدود تلقائياً وإرسال إشعار لحظي للمستخدم.</p>
+                  <p className="text-xs text-muted mb-4">اختر خطة ثم حدد مدتها قبل التفعيل. سيتم تحديث المميزات والحدود تلقائياً وإرسال إشعار لحظي للمستخدم.</p>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     {PLAN_DEFINITIONS.map((plan) => {
                       const isCurrent = plan.id === currentCenter.subscriptionPlan;
@@ -622,7 +640,7 @@ function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }:
                           key={plan.id}
                           whileHover={{ scale: 1.02 }}
                           whileTap={{ scale: 0.98 }}
-                          onClick={() => !isCurrent && handleQuickPlanSwitch(plan.id)}
+                          onClick={() => !isCurrent && openPlanDurationModal(plan.id)}
                           disabled={isCurrent || switchingPlan}
                           className={cn(
                             "relative rounded-xl border-2 p-4 text-center transition-all",
@@ -642,19 +660,171 @@ function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }:
                           <p className="mt-1 text-[10px] text-muted">
                             {plan.maxStudents === 99999 ? "طلاب غير محدودين" : `حتى ${plan.maxStudents} طالب`}
                           </p>
-                          {switchingPlan && !isCurrent && <Loader2 className="mx-auto mt-2 h-4 w-4 animate-spin text-brand-500" />}
+                          {!isCurrent && (
+                            <p className="mt-2 text-[10px] font-bold text-brand-600 dark:text-brand-400">اضغط لاختيار المدة ←</p>
+                          )}
                         </motion.button>
                       );
                     })}
                   </div>
                 </div>
 
+                {/* ============== DURATION SELECTION MODAL ============== */}
+                <AnimatePresence>
+                  {durationModal.open && durationModal.plan && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+                      onClick={() => setDurationModal({ open: false, plan: null })}
+                    >
+                      <motion.div
+                        initial={{ scale: 0.9, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        exit={{ scale: 0.9, opacity: 0 }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full max-w-lg rounded-2xl border border-line bg-surface p-6 shadow-2xl"
+                      >
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between mb-5">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-100 text-brand-600 dark:bg-brand-500/20">
+                              <CalendarDays className="h-5 w-5" />
+                            </div>
+                            <div>
+                              <h3 className="text-lg font-extrabold text-ink">حدد مدة الخطة</h3>
+                              <p className="text-xs text-muted">خطة: <span className="font-bold text-brand-600">{planLabels[durationModal.plan]}</span></p>
+                            </div>
+                          </div>
+                          <button onClick={() => setDurationModal({ open: false, plan: null })} className="rounded-lg p-1.5 text-muted hover:bg-elevated transition">
+                            <X className="h-5 w-5" />
+                          </button>
+                        </div>
+
+                        {/* Duration Options */}
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          {[
+                            { days: 7, label: "أسبوع", sub: "7 أيام" },
+                            { days: 14, label: "أسبوعين", sub: "14 يوم" },
+                            { days: 30, label: "شهر", sub: "30 يوم" },
+                            { days: 60, label: "شهرين", sub: "60 يوم" },
+                            { days: 90, label: "3 أشهر", sub: "90 يوم" },
+                            { days: 120, label: "4 أشهر", sub: "120 يوم" },
+                            { days: 180, label: "6 أشهر", sub: "180 يوم" },
+                            { days: 365, label: "سنة", sub: "365 يوم" },
+                          ].map((opt) => (
+                            <button
+                              key={opt.days}
+                              onClick={() => { setSelectedDuration(opt.days); setCustomDuration(""); }}
+                              className={cn(
+                                "rounded-xl border-2 p-3 text-center transition-all",
+                                selectedDuration === opt.days
+                                  ? "border-brand-500 bg-brand-50 shadow-sm dark:border-brand-400 dark:bg-brand-500/15"
+                                  : "border-line hover:border-brand-300"
+                              )}
+                            >
+                              <p className="text-sm font-extrabold text-ink">{opt.label}</p>
+                              <p className="text-[10px] text-muted">{opt.sub}</p>
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Custom duration */}
+                        <div className="mt-3">
+                          <button
+                            onClick={() => setSelectedDuration(-1)}
+                            className={cn(
+                              "w-full rounded-xl border-2 p-3 text-center transition-all",
+                              selectedDuration === -1
+                                ? "border-brand-500 bg-brand-50 dark:border-brand-400 dark:bg-brand-500/15"
+                                : "border-line hover:border-brand-300"
+                            )}
+                          >
+                            <p className="text-sm font-bold text-ink">مدة مخصصة</p>
+                          </button>
+                          {selectedDuration === -1 && (
+                            <div className="mt-2 flex gap-2">
+                              <input
+                                type="number"
+                                min="1"
+                                placeholder="عدد الأيام..."
+                                value={customDuration}
+                                onChange={(e) => setCustomDuration(e.target.value)}
+                                className="h-10 flex-1 rounded-lg border border-line bg-surface px-3 text-sm text-ink focus:border-brand-400 focus:outline-none"
+                                autoFocus
+                              />
+                              <span className="flex items-center text-xs text-muted">يوم</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Preview with actual dates */}
+                        {(() => {
+                          const dur = selectedDuration === -1 ? (parseInt(customDuration) || 0) : selectedDuration;
+                          if (dur <= 0) return null;
+                          const startDate = new Date();
+                          const endCalendar = new Date(startDate);
+                          endCalendar.setDate(endCalendar.getDate() + dur);
+                          return (
+                            <div className="mt-4 rounded-xl bg-emerald-50/70 border border-emerald-200 p-4 dark:bg-emerald-500/10 dark:border-emerald-500/30">
+                              <div className="flex items-center gap-2 mb-2">
+                                <Shield className="h-4 w-4 text-emerald-600" />
+                                <p className="text-xs font-bold text-emerald-800 dark:text-emerald-200">معاينة التفعيل (محمي ضد التلاعب)</p>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3 text-xs">
+                                <div>
+                                  <p className="text-muted">تاريخ البدء:</p>
+                                  <p className="font-bold text-ink">{startDate.toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" })}</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted">تاريخ الانتهاء:</p>
+                                  <p className="font-bold text-ink">{endCalendar.toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" })}</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted">المدة:</p>
+                                  <p className="font-bold text-ink">{dur} يوم</p>
+                                </div>
+                                <div>
+                                  <p className="text-muted">المميزات:</p>
+                                  <p className="font-bold text-emerald-700 dark:text-emerald-300">تلقائية حسب الخطة ✅</p>
+                                </div>
+                              </div>
+                              <p className="mt-2 text-[10px] text-emerald-700/70 dark:text-emerald-300/70 flex items-center gap-1">
+                                <Shield className="h-3 w-3" /> التاريخ محفوظ في Firebase — لا يمكن التلاعب به حتى لو تم إيقاف الإنترنت أو تغيير ساعة الجهاز
+                              </p>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Confirm button */}
+                        <div className="mt-5 flex gap-3">
+                          <button
+                            onClick={() => setDurationModal({ open: false, plan: null })}
+                            className="flex-1 rounded-xl border border-line bg-surface py-3 text-sm font-bold text-muted hover:bg-elevated transition"
+                          >
+                            إلغاء
+                          </button>
+                          <button
+                            onClick={handleQuickPlanSwitch}
+                            disabled={switchingPlan || (selectedDuration === -1 && (!customDuration || parseInt(customDuration) <= 0))}
+                            className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 py-3 text-sm font-bold text-white shadow-lg shadow-brand-600/25 transition hover:brightness-110 disabled:opacity-50"
+                          >
+                            {switchingPlan ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                            تفعيل الخطة الآن
+                          </button>
+                        </div>
+                      </motion.div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 {/* Grant Free Days */}
                 <div className="rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50/30 p-5 dark:border-amber-500/30 dark:bg-amber-500/5">
                   <h3 className="text-sm font-black text-ink mb-3 flex items-center gap-2">
                     <Gift className="h-4 w-4 text-amber-500" /> منح أيام مجانية
                   </h3>
-                  <p className="text-xs text-muted mb-4">أضف أيام مجانية للمستخدم مع اختيار الخطة. سيتم تمديد تاريخ الانتهاء وإرسال إشعار فوري.</p>
+                  <p className="text-xs text-muted mb-4">أضف أيام مجانية للمستخدم مع اختيار الخطة. سيتم تحديث تاريخ الانتهاء حسب التقويم الفعلي وإرسال إشعار فوري.</p>
                   
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
                     {/* Plan selector */}
@@ -703,12 +873,25 @@ function CenterDetailDrawer({ center: initialCenter, admin, onClose, onUpdate }:
                     </button>
                   </div>
 
-                  {/* Preview */}
-                  <div className="mt-4 rounded-xl bg-amber-100/50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
-                    <p className="font-bold">معاينة:</p>
-                    <p>سيتم مد خطة <strong>{PLAN_DEFINITIONS.find(p => p.id === freeDaysPlan)?.name}</strong> لمدة <strong>{freeDays} يوم</strong></p>
-                    <p>تاريخ الانتهاء الجديد المتوقع: <strong>{new Date(Math.max(currentCenter.subscriptionEndDate || Date.now(), Date.now()) + freeDays * 86400000).toLocaleDateString("ar-EG")}</strong></p>
-                  </div>
+                  {/* Preview with actual calendar dates */}
+                  {(() => {
+                    const now = new Date();
+                    const currentEnd = currentCenter.subscriptionEndDate || 0;
+                    const baseDate = new Date(currentEnd > Date.now() ? currentEnd : Date.now());
+                    const endCalendar = new Date(baseDate);
+                    endCalendar.setDate(endCalendar.getDate() + freeDays);
+                    return (
+                      <div className="mt-4 rounded-xl bg-amber-100/50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                        <p className="font-bold mb-1">معاينة بالتاريخ الفعلي:</p>
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <div><span className="text-amber-600/70">اليوم:</span> <strong>{now.toLocaleDateString("ar-EG", { month: "short", day: "numeric" })}</strong></div>
+                          <div><span className="text-amber-600/70">المدة:</span> <strong>{freeDays} {freeDays === 1 ? "يوم" : "أيام"}</strong></div>
+                          <div><span className="text-amber-600/70">تنتهي في:</span> <strong>{endCalendar.toLocaleDateString("ar-EG", { year: "numeric", month: "short", day: "numeric" })}</strong></div>
+                          <div><span className="text-amber-600/70">الخطة:</span> <strong>{PLAN_DEFINITIONS.find(p => p.id === freeDaysPlan)?.name}</strong></div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Plan Limits Preview */}

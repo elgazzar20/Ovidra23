@@ -2448,8 +2448,11 @@ export async function grantFreeDays(
   const currentPlan = plan || current.subscriptionPlan || "free";
   const planName = PLAN_DEFINITIONS.find(p => p.id === currentPlan)?.name || currentPlan;
 
-  // Calculate new end date: extend from current end date or from now
-  const baseDate = Math.max(current.subscriptionEndDate ?? Date.now(), Date.now());
+  // Calculate new end date: extend from current end date if still active, or from now if expired/none
+  // This ensures "grant 3 days" = 3 days from now if no active subscription,
+  // or 3 days added to the remaining time if subscription is still active
+  const currentEnd = current.subscriptionEndDate || 0;
+  const baseDate = currentEnd > Date.now() ? currentEnd : Date.now();
   const newEndDate = baseDate + days * 86400000;
 
   // 2. Update subscription with plan + new end date
@@ -2484,13 +2487,14 @@ export async function grantFreeDays(
   if (ownerUid) {
     const notifId = `free_days_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const endDateStr = new Date(newEndDate).toLocaleDateString("ar-EG");
+    const remainingDays = Math.ceil((newEndDate - Date.now()) / 86400000);
     await setDoc(doc(firestoreDb, "notifications", notifId), {
       notifId,
       recipientUid: ownerUid,
       centerId,
       type: "subscription",
-      title: `🎁 تم منحك ${days} أيام مجانية!`,
-      body: `تم مد خطة "${planName}" لمدة ${days} يوم مجاناً بواسطة إدارة المنصة. تاريخ الانتهاء الجديد: ${endDateStr}. استمتع بكل المميزات!`,
+      title: `🎁 تم منحك ${days} ${days === 1 ? "يوم" : "أيام"} مجانية!`,
+      body: `تم مد خطة "${planName}" لمدة ${days} ${days === 1 ? "يوم" : "أيام"} مجاناً بواسطة إدارة المنصة. تاريخ الانتهاء الجديد: ${endDateStr} (متبقي ${remainingDays} يوم). استمتع بكل المميزات!`,
       read: false,
       createdAt: Date.now(),
     });
@@ -2499,8 +2503,8 @@ export async function grantFreeDays(
   // 5. Add timeline event
   await addTimelineEvent(centerId, {
     type: "free_days",
-    title: `منح ${days} أيام مجانية`,
-    description: `تم منح ${days} أيام مجانية للخطة ${planName}. تاريخ الانتهاء الجديد: ${new Date(newEndDate).toLocaleDateString("ar-EG")}`,
+    title: `منح ${days} ${days === 1 ? "يوم" : "أيام"} مجانية`,
+    description: `تم منح ${days} ${days === 1 ? "يوم مجاني" : "أيام مجانية"} للخطة ${planName}. تاريخ الانتهاء الجديد: ${new Date(newEndDate).toLocaleDateString("ar-EG")}`,
     newPlan: currentPlan as SubscriptionPlan,
     daysAdded: days,
   }, admin);
@@ -2509,15 +2513,19 @@ export async function grantFreeDays(
 }
 
 /**
- * Performs a one-click plan switch for a center. Changes the plan,
- * applies all features and limits, and sends an instant notification.
+ * Performs a plan switch for a center with a specified duration.
+ * Changes the plan, applies all features and limits, sets exact end date,
+ * stores server timestamp for anti-tampering, and sends an instant notification.
+ * 
+ * @param durationDays - The number of days the plan should last (0 = no expiry for free plan)
  */
 export async function quickPlanSwitch(
   centerId: string,
   newPlan: SubscriptionPlan,
   admin: { uid: string; email: string },
-): Promise<void> {
-  if (!FIREBASE_ENABLED || !firestoreDb) return;
+  durationDays: number = 30,
+): Promise<{ newEndDate: number }> {
+  if (!FIREBASE_ENABLED || !firestoreDb) return { newEndDate: 0 };
 
   // 1. Read current center data
   const snap = await getDoc(doc(firestoreDb, "centers", centerId));
@@ -2525,26 +2533,49 @@ export async function quickPlanSwitch(
   const previousPlan = current.subscriptionPlan || "free";
   const planName = PLAN_DEFINITIONS.find(p => p.id === newPlan)?.name || newPlan;
 
-  // 2. Determine subscription end date
-  let endDate = current.subscriptionEndDate || Date.now();
+  // 2. Calculate exact end date using calendar dates (not just milliseconds)
+  //    This ensures "1 month" = actual calendar month, "1 week" = 7 days, etc.
+  const now = new Date();
+  let endDate: number;
+  
   if (newPlan === "free") {
     // Free plan has no end date
     endDate = 0;
-  } else if (!current.subscriptionEndDate || current.subscriptionEndDate < Date.now()) {
-    // If no valid end date, give 30 days by default
-    endDate = Date.now() + 30 * 86400000;
+  } else {
+    // Calculate end date by adding exact days to today's date at 23:59:59
+    const endCalendar = new Date(now);
+    endCalendar.setDate(endCalendar.getDate() + durationDays);
+    endCalendar.setHours(23, 59, 59, 999); // End at end of the final day
+    endDate = endCalendar.getTime();
   }
 
-  // 3. Update subscription
+  // 3. Build human-readable duration label
+  const durationLabel = durationDays === 7 ? "أسبوع" 
+    : durationDays === 14 ? "أسبوعين"
+    : durationDays === 30 ? "شهر" 
+    : durationDays === 60 ? "شهرين" 
+    : durationDays === 90 ? "3 أشهر" 
+    : durationDays === 120 ? "4 أشهر"
+    : durationDays === 180 ? "6 أشهر"
+    : durationDays === 365 ? "سنة" 
+    : `${durationDays} يوم`;
+
+  // 4. Update subscription with anti-tampering fields
+  //    - subscriptionActivatedAt: the exact timestamp the plan was activated (for audit)
+  //    - subscriptionEndDate: the exact timestamp the plan expires
+  //    - subscriptionDurationDays: original duration in days (for reference)
   await updateSubscription(centerId, {
     subscriptionPlan: newPlan,
     subscriptionStatus: newPlan === "free" ? "trialing" : "active",
+    subscriptionStartDate: now.getTime(),
     subscriptionEndDate: endDate || undefined,
-    lastPlanSwitch: Date.now(),
+    subscriptionActivatedAt: now.getTime(),
+    subscriptionDurationDays: durationDays,
+    lastPlanSwitch: now.getTime(),
     lastPlanSwitchBy: admin.email,
   }, admin);
 
-  // 4. Apply features and limits
+  // 5. Apply features and limits automatically based on the selected plan
   await applyPlanFeatures(centerId, newPlan, admin);
   const planLimits = DEFAULT_LIMITS[newPlan];
   if (planLimits) {
@@ -2555,14 +2586,35 @@ export async function quickPlanSwitch(
     }
   }
 
-  // 5. Add timeline event
+  // 6. Add timeline event with full details
   const isUpgrade = (PLAN_DEFINITIONS.findIndex(p => p.id === newPlan) > PLAN_DEFINITIONS.findIndex(p => p.id === previousPlan));
+  const endDateStr = endDate ? new Date(endDate).toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" }) : "—";
+  
   await addTimelineEvent(centerId, {
     type: isUpgrade ? "upgrade" : "downgrade",
     title: isUpgrade ? `ترقية إلى خطة ${planName}` : `تغيير إلى خطة ${planName}`,
-    description: `تم تغيير الخطة من "${PLAN_DEFINITIONS.find(p => p.id === previousPlan)?.name || previousPlan}" إلى "${planName}" بواسطة ${admin.email}`,
+    description: `تم تغيير الخطة من "${PLAN_DEFINITIONS.find(p => p.id === previousPlan)?.name || previousPlan}" إلى "${planName}" لمدة ${durationLabel}. تاريخ الانتهاء: ${endDateStr}. بواسطة ${admin.email}`,
     previousPlan: previousPlan as SubscriptionPlan,
     newPlan: newPlan,
+    daysAdded: durationDays,
   }, admin);
+
+  // 7. Send notification to center owner
+  const ownerUid = current.ownerId;
+  if (ownerUid) {
+    const notifId = `plan_switch_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await setDoc(doc(firestoreDb, "notifications", notifId), {
+      notifId,
+      recipientUid: ownerUid,
+      centerId,
+      type: "subscription",
+      title: `🎉 تم تفعيل خطة ${planName} لمدة ${durationLabel}`,
+      body: `تم تفعيل خطة "${planName}" على سنترك لمدة ${durationLabel}. تاريخ الانتهاء: ${endDateStr}. جميع المميزات والحدود تم تحديثها تلقائياً!`,
+      read: false,
+      createdAt: Date.now(),
+    });
+  }
+
+  return { newEndDate: endDate };
 }
 

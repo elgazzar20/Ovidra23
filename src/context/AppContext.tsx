@@ -368,18 +368,59 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (centerId === DEMO_CENTER) return;
     const key = `cpd_secure_time_watermark_${centerId}`;
-    const updateWatermark = () => {
+    
+    const updateWatermark = async () => {
       const stored = localStorage.getItem(key);
       const storedTime = stored ? Number(stored) : 0;
-      const currentTime = Date.now();
+      
+      let currentTime = Date.now();
+      
+      // If online, fetch real network time to prevent local clock manipulation
+      if (navigator.onLine) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          
+          const res = await fetch("https://worldtimeapi.org/api/timezone/Etc/UTC", { signal: controller.signal });
+          clearTimeout(timeoutId);
+          
+          if (res.ok) {
+            const data = await res.json();
+            if (data && typeof data.unixtime === "number") {
+              currentTime = data.unixtime * 1000;
+            }
+          }
+        } catch (e) {
+          // Fallback to secondary time API if primary is blocked or fails
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+            const res = await fetch("https://timeapi.io/api/Time/current/zone?timeZone=UTC", { signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (res.ok) {
+              const data = await res.json();
+              if (data && typeof data.milliSecondsSinceEpoch === "number") {
+                currentTime = data.milliSecondsSinceEpoch;
+              }
+            }
+          } catch (e2) {
+            // Ignore, will use local system Date.now() as final fallback
+          }
+        }
+      }
+      
+      // Watermark logic: always moving forward, never backward
       const nextWatermark = Math.max(currentTime, storedTime);
       if (nextWatermark > storedTime) {
         localStorage.setItem(key, String(nextWatermark));
         setSecureTimeWatermark(nextWatermark);
       }
     };
+    
     updateWatermark();
-    const interval = setInterval(updateWatermark, 10000);
+    // Check/sync every 15 seconds
+    const interval = setInterval(updateWatermark, 15000);
     return () => clearInterval(interval);
   }, [centerId]);
   const effectiveDbKey = dbKeyFor(centerId, currentBranchId);
@@ -1361,37 +1402,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // 2. Fallback: Check local storage (prioritizing real databases over the demo database)
+    // 2. Fallback: Check local storage — NEVER search demo databases from portal
+    //    This prevents random 6-char codes from accidentally matching demo student data
     const keys: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (key && key.startsWith("cpd_db_")) {
+        // Skip demo databases entirely — they contain fake seed data that can match random codes
+        if (key.includes("demo")) continue;
         keys.push(key);
       }
     }
-    // Sort keys so that non-demo databases are checked first
-    keys.sort((a, b) => {
-      if (a.includes("demo") && !b.includes("demo")) return 1;
-      if (!a.includes("demo") && b.includes("demo")) return -1;
-      return 0;
-    });
 
     for (const key of keys) {
       try {
         const raw = localStorage.getItem(key);
         if (raw) {
           const parsed = JSON.parse(raw) as DatabaseShape;
+          const inputTrimmed = studentCode.trim();
           const found = parsed.students.find(s => {
-            const cleanId = s.id.toLowerCase().replace(/[^a-z0-9]/g, "");
-            const cleanQr = (s.qrCode || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-            const cleanParentPhone = (s.parentPhone || "").replace(/[^0-9]/g, "");
-            const queryPhoneCleaned = cleanQuery.replace(/[^0-9]/g, "");
-            
-            return (
-              cleanId === cleanQuery ||
-              (cleanQr && cleanQr === cleanQuery) ||
-              (cleanParentPhone && queryPhoneCleaned && cleanParentPhone.endsWith(queryPhoneCleaned))
-            );
+            // Exact ID match (case-insensitive)
+            if (s.id.toLowerCase() === inputTrimmed.toLowerCase()) return true;
+            // Exact QR code match
+            if (s.qrCode && s.qrCode.toLowerCase() === inputTrimmed.toLowerCase()) return true;
+            // Phone number match — only if the query looks like a phone number (digits only, >= 7 chars)
+            const queryDigits = inputTrimmed.replace(/[^0-9]/g, "");
+            if (queryDigits.length >= 7) {
+              const parentDigits = (s.parentPhone || "").replace(/[^0-9]/g, "");
+              const studentDigits = (s.studentPhone || "").replace(/[^0-9]/g, "");
+              if (parentDigits && parentDigits.endsWith(queryDigits)) return true;
+              if (studentDigits && studentDigits.endsWith(queryDigits)) return true;
+            }
+            return false;
           });
 
           if (found) {
@@ -1456,27 +1498,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // 2. Fallback: Check local storage (prioritizing real databases over the demo database)
+    // 2. Fallback: Check local storage — NEVER search demo databases from portal
     const keys: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (key && key.startsWith("cpd_db_")) {
+        // Skip demo databases — they contain fake seed data that can match random codes
+        if (key.includes("demo")) continue;
         keys.push(key);
       }
     }
-    // Sort keys so that non-demo databases are checked first
-    keys.sort((a, b) => {
-      if (a.includes("demo") && !b.includes("demo")) return 1;
-      if (!a.includes("demo") && b.includes("demo")) return -1;
-      return 0;
-    });
 
     for (const key of keys) {
       try {
         const raw = localStorage.getItem(key);
         if (raw) {
           const parsed = JSON.parse(raw) as DatabaseShape;
-          const found = parsed.teachers.find(t => t.id.toLowerCase() === cleanQuery);
+          const inputTrimmed = teacherCode.trim();
+          const found = parsed.teachers.find(t => t.id.toLowerCase() === inputTrimmed.toLowerCase());
           if (found) {
             const cid = key.replace("cpd_db_", "");
             setPortalCenterId(cid);

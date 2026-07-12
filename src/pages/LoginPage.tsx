@@ -2,7 +2,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   GraduationCap, ChevronLeft, Mail, Lock, User, ShieldCheck,
-  Cloud, QrCode, BarChart3, LockKeyhole, Loader2, ArrowRight,
+  Cloud, QrCode, BarChart3, LockKeyhole, Loader2, ArrowRight, KeyRound,
 } from "lucide-react";
 import { useApp } from "../context/AppContext";
 import { cn } from "../utils/cn";
@@ -130,6 +130,10 @@ function LoginForm({ t, isAr, defaultMode, onParentPortal, onStudentPortal, onTe
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotMsg, setForgotMsg] = useState("");
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,6 +196,78 @@ function LoginForm({ t, isAr, defaultMode, onParentPortal, onStudentPortal, onTe
           >
             {t("auth.ownerHint")}
           </motion.p>
+        )}
+
+        {/* Forgot Password Link */}
+        {mode === "in" && (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => { setShowForgot(!showForgot); setForgotMsg(""); }}
+              className="text-[12px] font-semibold text-brand-600 hover:text-brand-700 transition dark:text-brand-400"
+            >
+              <KeyRound className="inline h-3 w-3 me-1" />
+              {isAr ? "هل نسيت كلمة السر؟" : "Forgot password?"}
+            </button>
+          </div>
+        )}
+
+        {/* Forgot Password Inline Form */}
+        {showForgot && mode === "in" && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            className="rounded-xl border border-brand-200 bg-brand-50/50 p-4 space-y-3 dark:border-brand-500/20 dark:bg-brand-500/10"
+          >
+            <p className="text-xs text-brand-700 dark:text-brand-200 font-medium">
+              {isAr ? "أدخل بريدك الإلكتروني وسنرسل لك رابط إعادة تعيين كلمة السر" : "Enter your email and we'll send you a password reset link"}
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="email"
+                placeholder={isAr ? "بريدك الإلكتروني" : "Your email"}
+                value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+                className="h-10 flex-1 rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-faint focus:border-brand-400 focus:outline-none"
+              />
+              <button
+                type="button"
+                disabled={forgotLoading || !forgotEmail.trim()}
+                onClick={async () => {
+                  setForgotLoading(true);
+                  setForgotMsg("");
+                  try {
+                    const { sendPasswordResetEmail } = await import("firebase/auth");
+                    const { auth } = await import("../lib/firebase");
+                    if (auth) {
+                      await sendPasswordResetEmail(auth, forgotEmail.trim());
+                      setForgotMsg(isAr ? "✅ تم إرسال رابط إعادة تعيين كلمة السر بنجاح! تحقق من بريدك الإلكتروني." : "✅ Password reset email sent! Check your inbox.");
+                    } else {
+                      setForgotMsg(isAr ? "❌ خدمة Firebase غير متوفرة حالياً" : "❌ Firebase service unavailable");
+                    }
+                  } catch (err: any) {
+                    if (err?.code === "auth/user-not-found") {
+                      setForgotMsg(isAr ? "❌ هذا البريد غير مسجل في النظام" : "❌ Email not found");
+                    } else if (err?.code === "auth/invalid-email") {
+                      setForgotMsg(isAr ? "❌ بريد إلكتروني غير صالح" : "❌ Invalid email");
+                    } else {
+                      setForgotMsg(isAr ? "❌ حدث خطأ. حاول مرة أخرى" : "❌ An error occurred. Try again");
+                    }
+                  } finally {
+                    setForgotLoading(false);
+                  }
+                }}
+                className="h-10 rounded-lg bg-brand-600 px-4 text-xs font-bold text-white transition hover:bg-brand-700 disabled:opacity-50"
+              >
+                {forgotLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : (isAr ? "إرسال" : "Send")}
+              </button>
+            </div>
+            {forgotMsg && (
+              <p className={`text-xs font-semibold ${forgotMsg.startsWith("✅") ? "text-emerald-600" : "text-rose-600"}`}>
+                {forgotMsg}
+              </p>
+            )}
+          </motion.div>
         )}
 
         {error && (
