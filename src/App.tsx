@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import { AppProvider, useApp } from "./context/AppContext";
 import { Toaster } from "./components/ui";
 import { Layout } from "./components/Layout";
@@ -371,7 +372,7 @@ function Root() {
             </svg>
           </div>
           <h3 className="text-base font-extrabold text-ink">
-            {lang === "ar" ? "تابع التحديثات والميزات الجديدة!" : "Follow Updates & New Features!"}
+            {lang === "ar" ? "تابع التحد��ثات والميزات الجديدة!" : "Follow Updates & New Features!"}
           </h3>
           <p className="text-xs text-muted leading-relaxed">
             {lang === "ar"
@@ -413,6 +414,7 @@ export default function App() {
       <AppProvider>
         <Root />
         <Toaster />
+        <Analytics />
       </AppProvider>
     </ErrorBoundary>
   );
